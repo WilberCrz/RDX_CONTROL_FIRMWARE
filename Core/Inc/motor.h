@@ -76,11 +76,12 @@ void Motor_Destroy(MotorHandle_t handle);
 
 /**
  * @brief Actualiza el estado interno del encoder, debe llamarse desde una
- * interrupcion.
+ * Interrupcion ISR o DMA.
  *
  * @param handle Descriptor del motor.
+ * @param _htim Timer que activo la interrupcion
  */
-void Motor_UpdateEncoder(MotorHandle_t handle);
+void Motor_UpdateEncoder(MotorHandle_t handle, TIM_HandleTypeDef *_htim);
 
 /**
  * @brief Establece el valor objetivo para motores de traccion.
@@ -115,15 +116,19 @@ float Motor_GetCurrentPosition(MotorHandle_t handle);
  * @brief Setea el 0 grados para motores modo steer
  *
  * @param handle
+ *
+ *@return bool
  */
-void SetZeroDegres(MotorHandle_t handle);
+bool SetZeroDegres(MotorHandle_t handle);
 /**
  * @brief Setea en el motor tipo steer los grados maximos de rotacion a partir del 0 grados
  * 
  * @param handle 
  * @param max_degrees 
+ *
+ *@return bool
  */
-void SetMaxDegres(MotorHandle_t handle, uint32_t max_degrees);
+bool SetMaxDegres(MotorHandle_t handle, uint32_t max_degrees);
 
 /**
  * @brief Calcula el pid y modifica la direccion y pwm. Exelente para llamar desde tarea FreeRtos
@@ -133,4 +138,17 @@ void SetMaxDegres(MotorHandle_t handle, uint32_t max_degrees);
  * @param delta_time_sec periodo de tiempo para calculo de pid clasico con transformada de laplace
  */
 void ControllerLoop(MotorHandle_t handle, float delta_time_sec);
+
+/**
+* @brief Activa el pwm del motor designado con vel valor asignado, utilizado para calibracion
+*
+* @param handle
+*
+* @param forward
+*
+* @param value
+ */
+void Motor_SetRawPWM(MotorHandle_t handle,bool forward, uint32_t value);
+
+Motor_type_t Motor_Get_Type(MotorHandle_t handle);
 #endif

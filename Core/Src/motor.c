@@ -10,6 +10,8 @@
  */
 
 #include "FreeRTOS.h"
+#include "stm32h7xx_hal_gpio.h"
+#include "stm32h7xx_hal_tim.h"
 #include "task.h"
 
 
@@ -188,7 +190,9 @@ void Motor_SetTargetPosition(MotorHandle_t handle, float angle_degrees) {
   }
 }
 
-void Motor_UpdateEncoder(MotorHandle_t handle) {
+void Motor_UpdateEncoder(MotorHandle_t handle, TIM_HandleTypeDef *_htim) {
+  if (handle->enc_capture_tim->Instance == _htim->Instance) {
+    
   switch (handle->type) {
   case MOTOR_TYPE_DRIVE: {
 
@@ -212,23 +216,18 @@ void Motor_UpdateEncoder(MotorHandle_t handle) {
     return;
     break;
   }
+
+  }
+  return;
 }
 
-/**
- * @brief  Calcula la velocidad actual en RPM utilizando los valores
- * actualizados por motor_update.
- *
- * @param handle Descriptor del motor
- * @return Velocidad calculada en float.Retorna 0.0f si el motor esta detenido o
- * se exede el timeout.
- */
 void GetRPM_IT(MotorHandle_t handle) {
   if (handle == NULL || handle->type != MOTOR_TYPE_DRIVE ||
       handle->enc_capture_tim == NULL)
     return;
   taskENTER_CRITICAL();
-  uint32_t t0 = handle->enc_drive.ticks_time[0];
-  uint32_t t1 = handle->enc_drive.ticks_time[1];
+  uint32_t t0 = handle->enc_drive.ticks_time[0]; //snapshot
+  uint32_t t1 = handle->enc_drive.ticks_time[1];//snapshot
   taskEXIT_CRITICAL();
   uint32_t current_time = __HAL_TIM_GET_COUNTER(handle->enc_capture_tim);
   uint32_t time_since_pulse = 0;
@@ -260,31 +259,23 @@ void GetRPM_IT(MotorHandle_t handle) {
   handle->drive.current_speed_rpm = rpm;
 }
 
-/**
- * @brief
- *
- * @param handle
- */
 void GetDegrees_IT(MotorHandle_t handle) {
   if (handle == NULL || handle->type != MOTOR_TYPE_STEER ||
       handle->enc_steering.max_pulses == 0) {
     return;
   }
-  float current_pulses = (float)handle->enc_steering.pulses;
+  taskENTER_CRITICAL();
+  uint32_t pulsos_locales = handle->enc_steering.pulses; //snapshot
+  taskEXIT_CRITICAL();
+
+  float current_pulses = (float)pulsos_locales;
   float max_pulses = (float)handle->enc_steering.max_pulses;
   float max_degrees = (float)handle->enc_steering.max_degrees; //
+
   float pulses_to_degres = (current_pulses * max_degrees) / max_pulses;
   handle->steering.current_position_deg = pulses_to_degres;
 }
 
-/**
- * @brief implementacion del argoritmo de control de velocidad para motor tipo
- * MOTOR_TYPE_DRIVE.
- *
- * @details Calcula la salida basandose en la ecuacion de control.
- *
- * @param motor Descriptor del motor.
- */
 static float RPM_PID(MotorHandle_t motor, float delta_time_SEC) {
   if (motor == NULL || motor->type != MOTOR_TYPE_DRIVE) {
     return 0.0f;
@@ -318,17 +309,6 @@ static float RPM_PID(MotorHandle_t motor, float delta_time_SEC) {
   return p_term + i_term + d_term;
 }
 
-/**
- * @brief Implementacion del algoritmo de control de direccion para motor tipo
- * MOTOR_TYPE_STEER.
- *
- * @details Calcula el esfuerzo necesario para minimizar el error entre los
- * grados actuales y los objetivos.
- *
- * @param motor Descriptor del motor.
- *
- * @return Valor de ajuste para el ciclo de trabajo PWM float.
- */
 static float STEER_PID(MotorHandle_t motor, float delta_time_sec) {
   if (motor == NULL || motor->type != MOTOR_TYPE_STEER)
     return 0.0f;
@@ -394,29 +374,34 @@ bool Motor_GetState(MotorHandle_t handle) {
   }
   return 0;
 }
-void SetZeroDegres(MotorHandle_t handle) {
+bool SetZeroDegres(MotorHandle_t handle) {
   if (handle == NULL || handle->type != MOTOR_TYPE_STEER)
-    return;
+    return 0;
+  uint16_t ls_der=HAL_GPIO_ReadPin(handle->steering.der_limit_port,handle->steering.derPin_limit);
+  if (ls_der == GPIO_PIN_RESET) {
+
   handle->enc_steering.pulses = 0;
   handle->enc_steering.is_calibrated = 0;
+  return 1;
+  }
+  return 0;
 }
 
-void SetMaxDegres(MotorHandle_t handle, uint32_t max_degrees) {
+bool SetMaxDegres(MotorHandle_t handle, uint32_t max_degrees) {
   if (handle == NULL || max_degrees == 0 || handle->type != MOTOR_TYPE_STEER) {
-    return;
+    return 0;
   }
+
+  uint16_t ls_izq=HAL_GPIO_ReadPin(handle->steering.izq_limit_port,handle->steering.izqPin_limit);
+  if (ls_izq == GPIO_PIN_RESET) {
   handle->enc_steering.max_degrees = max_degrees;
   handle->enc_steering.max_pulses = handle->enc_steering.pulses;
   handle->enc_steering.center_pulses = handle->enc_steering.max_pulses / 2;
   handle->enc_steering.is_calibrated = 1;
+  return 1;
+  }
+  return 0;
 }
-
-/**
- * @brief
- *
- * @param handle
- * @return float
- */
 float Motor_GetCurrentSpeed(MotorHandle_t handle) {
 
   if (handle == NULL || handle->type != MOTOR_TYPE_DRIVE) {
@@ -424,15 +409,30 @@ float Motor_GetCurrentSpeed(MotorHandle_t handle) {
   }
   return handle->drive.current_speed_rpm;
 }
-/**
- * @brief
- *
- * @param handle
- * @return float
- */
 float Motor_GetCurrentPosition(MotorHandle_t handle) {
   if (handle == NULL || handle->type != MOTOR_TYPE_STEER) {
     return 0.0f;
   }
   return handle->steering.current_position_deg;
+}
+
+void Motor_SetRawPWM(MotorHandle_t handle,bool forward, uint32_t value){
+  if (handle == NULL) return;
+
+  if (forward == true) {
+    HAL_GPIO_WritePin(handle->dir_portA,handle->dirPin_A, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(handle->dir_portB,handle->dirPin_B, GPIO_PIN_RESET);
+  
+  }else {
+  
+    HAL_GPIO_WritePin(handle->dir_portA,handle->dirPin_A, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(handle->dir_portB,handle->dirPin_B, GPIO_PIN_SET);
+  }
+
+  __HAL_TIM_SET_COMPARE(handle->pwm_tim, handle->pwm_channel, value);
+
+}
+
+Motor_type_t Motor_Get_Type(MotorHandle_t handle) {
+  return handle->type;
 }

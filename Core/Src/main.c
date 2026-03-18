@@ -17,16 +17,24 @@
  */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
-#include "main.h"
+
 #include "FreeRTOS.h"
+
+#include "main.h"
 #include "cmsis_os2.h"
 #include "adc.h"
 #include "dma.h"
 #include "i2c.h"
+#include "mpu_prototypes.h"
+#include "portmacro.h"
+#include "projdefs.h"
 #include "spi.h"
+#include "stm32h7xx_hal_tim.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
+#include "motor.h"
+#include <stdint.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -52,6 +60,7 @@
 
 /* USER CODE BEGIN PV */
 MotorHandle_t motores[10];
+uint8_t packed_motores_size;
 
 /* USER CODE END PV */
 
@@ -90,10 +99,10 @@ int main(void)
           .type = MOTOR_TYPE_STEER,
           .pwm_tim = &htim1,
           .pwm_channel = TIM_CHANNEL_1,
-          .dir_portA = GPIOA,
-          .dir_portB = GPIOB,
-          .dir_A = 23,
-          .dir_b = 10,
+          .dir_portA = GPIOG,
+          .dir_portB = GPIOG,
+          .dir_A = 4,
+          .dir_b = 5,
           .enc_capture_tim = &htim3,
           .enc_captureA_channel = TIM_CHANNEL_3,
           .gear_ratio = 50,
@@ -107,19 +116,83 @@ int main(void)
           .ki = 0,
           .kd = 0,
       },
-      [1]={},
-      [2]={},
-      [3]={},
+      [1]={
+          //Delantero DER
+          .type = MOTOR_TYPE_STEER,
+          .pwm_tim = &htim1,
+          .pwm_channel = TIM_CHANNEL_2,
+          .dir_portA = GPIOG,
+          .dir_portB = GPIOG,
+          .dir_A = 6,
+          .dir_b = 7,
+          .enc_capture_tim = &htim3,
+          .enc_captureA_channel = TIM_CHANNEL_4,
+          .gear_ratio = 50,
+          .enc_ppr = 200,
+
+          .izq_limit_port = GPIOC,
+          .der_limit_port = GPIOD,
+          .izq_limit = 3,
+          .der_limit = 5,
+          .kp = 200,
+          .ki = 0,
+          .kd = 0,
+      },
+      [2]={
+          //Trasero IZQ
+          .type = MOTOR_TYPE_STEER,
+          .pwm_tim = &htim1,
+          .pwm_channel = TIM_CHANNEL_3,
+          .dir_portA = GPIOG,
+          .dir_portB = GPIOG,
+          .dir_A = 0,
+          .dir_b = 1,
+          .enc_capture_tim = &htim3,
+          .enc_captureA_channel = TIM_CHANNEL_1,
+          .gear_ratio = 50,
+          .enc_ppr = 200,
+
+          .izq_limit_port = GPIOC,
+          .der_limit_port = GPIOD,
+          .izq_limit = 3,
+          .der_limit = 5,
+          .kp = 200,
+          .ki = 0,
+          .kd = 0,
+      },
+      [3]={
+
+          //Trasero DER
+          .type = MOTOR_TYPE_STEER,
+          .pwm_tim = &htim1,
+          .pwm_channel = TIM_CHANNEL_4,
+          .dir_portA = GPIOG,
+          .dir_portB = GPIOG,
+          .dir_A = 2,
+          .dir_b = 3,
+          .enc_capture_tim = &htim3,
+          .enc_captureA_channel = TIM_CHANNEL_2,
+          .gear_ratio = 50,
+          .enc_ppr = 200,
+
+          .izq_limit_port = GPIOC,
+          .der_limit_port = GPIOD,
+          .izq_limit = 3,
+          .der_limit = 5,
+          .kp = 200,
+          .ki = 0,
+          .kd = 0,
+      },
       [4]={
 
           // M1 IZQ
           .type = MOTOR_TYPE_DRIVE,
           .pwm_tim = &htim2,
           .pwm_channel = TIM_CHANNEL_1,
-          .dir_portA = GPIOA,
-          .dir_portB = GPIOB,
-          .dir_A = 23,
-          .dir_b = 10,
+          .dir_portA = GPIOG,
+          .dir_portB = GPIOG,
+          .dir_A = 8,
+          .dir_b = 9,
           .enc_capture_tim = &htim4,
           .enc_captureA_channel = TIM_CHANNEL_1,
           .gear_ratio = 50,
@@ -130,11 +203,99 @@ int main(void)
           .kd = 0,
 
       },
-    [5]={},
-    [6]={},
-     [7]={},
-     [8]={},
-     [9]={},
+    [5]={
+
+          // M1 DER
+          .type = MOTOR_TYPE_DRIVE,
+          .pwm_tim = &htim2,
+          .pwm_channel = TIM_CHANNEL_2,
+          .dir_portA = GPIOG,
+          .dir_portB = GPIOG,
+          .dir_A = 10,
+          .dir_b = 11,
+          .enc_capture_tim = &htim4,
+          .enc_captureA_channel = TIM_CHANNEL_3,
+          .gear_ratio = 50,
+          .enc_ppr = 200,
+
+          .kp = 200,
+          .ki = 0,
+          .kd = 0,
+    },
+    [6]={
+
+          // M3 DER
+          .type = MOTOR_TYPE_DRIVE,
+          .pwm_tim = &htim2,
+          .pwm_channel = TIM_CHANNEL_3,
+          .dir_portA = GPIOG,
+          .dir_portB = GPIOG,
+          .dir_A = 10,
+          .dir_b = 11,
+          .enc_capture_tim = &htim4,
+          .enc_captureA_channel = TIM_CHANNEL_4,
+          .gear_ratio = 50,
+          .enc_ppr = 200,
+
+          .kp = 200,
+          .ki = 0,
+          .kd = 0,
+    },
+     [7]={
+          // M3 IZQ
+          .type = MOTOR_TYPE_DRIVE,
+          .pwm_tim = &htim2,
+          .pwm_channel = TIM_CHANNEL_4,
+          .dir_portA = GPIOG,
+          .dir_portB = GPIOG,
+          .dir_A = 8,
+          .dir_b = 9,
+          .enc_capture_tim = &htim4,
+          .enc_captureA_channel = TIM_CHANNEL_2,
+          .gear_ratio = 50,
+          .enc_ppr = 200,
+
+          .kp = 200,
+          .ki = 0,
+          .kd = 0,
+     },
+     [8]={
+          // M2 IZQ
+          .type = MOTOR_TYPE_DRIVE,
+          .pwm_tim = &htim15,
+          .pwm_channel = TIM_CHANNEL_1,
+          .dir_portA = GPIOG,
+          .dir_portB = GPIOG,
+          .dir_A = 8,
+          .dir_b = 9,
+          .enc_capture_tim = &htim5,
+          .enc_captureA_channel = TIM_CHANNEL_1,
+          .gear_ratio = 50,
+          .enc_ppr = 200,
+
+          .kp = 200,
+          .ki = 0,
+          .kd = 0,
+     },
+     [9]={
+
+          // M2 DER
+          .type = MOTOR_TYPE_DRIVE,
+          .pwm_tim = &htim15,
+          .pwm_channel = TIM_CHANNEL_2,
+          .dir_portA = GPIOG,
+          .dir_portB = GPIOG,
+          .dir_A = 10,
+          .dir_b = 11,
+          .enc_capture_tim = &htim5,
+          .enc_captureA_channel = TIM_CHANNEL_2,
+          .gear_ratio = 50,
+          .enc_ppr = 200,
+
+          .kp = 200,
+          .ki = 0,
+          .kd = 0,
+     },
   };
 
   /* USER CODE END 1 */
@@ -182,6 +343,7 @@ int main(void)
   for (uint8_t i = 0; i < (sizeof(cfg_motores) / sizeof(MotorConfig_t)); i++) {
     motores[i] = Motor_Init(&cfg_motores[i]);
   }
+  packed_motores_size = sizeof(motores)/sizeof(motores[0]);
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -292,7 +454,43 @@ void PeriphCommonClock_Config(void)
 
 /********TAREAS BEGIN ***************** */
 // motor control PRIO 0
-void TaskMotorControl(void *Pvparameter) {}
+void TaskMotorControl(void *Pvparameter) {
+  /*HOMING*/
+  for(uint8_t i=0;i< packed_motores_size; i++){
+    if (motores[i]!=NULL && Motor_Get_Type(motores[i]) == MOTOR_TYPE_STEER){
+      Motor_SetRawPWM(motores[i], 1, 2000);
+
+      while(!SetZeroDegres(motores[i])){
+        vTaskDelay(pdMS_TO_TICKS(10));
+      }
+      Motor_SetRawPWM(motores[i], 1, 0);
+      vTaskDelay(pdMS_TO_TICKS(100));
+      
+      Motor_SetRawPWM(motores[i], 0, 2000);
+
+      while(!SetMaxDegres(motores[i],180)){
+        vTaskDelay(pdMS_TO_TICKS(10));
+      }
+    
+      Motor_SetRawPWM(motores[i], 1, 0);
+      vTaskDelay(pdMS_TO_TICKS(100));
+
+      Motor_SetTargetPosition(motores[i], 90.0f);
+    }
+  }
+  /*HOMING*/
+  
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+  const TickType_t xFrecuency= pdMS_TO_TICKS(5);
+  for(;;){
+
+  for (uint32_t i=0;i< packed_motores_size ; i++) {
+    ControllerLoop(motores[i], DELTA_TIME_SEC);
+  }
+  vTaskDelayUntil(&xLastWakeTime, xFrecuency);
+  }
+
+}
 // tarea RF PRIO 1
 void TaskRFSbus(void *Pvparameter) {}
 //  telemetria "velocidad,nivel de bateria,gps" PRIO 2
@@ -354,6 +552,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   /* USER CODE BEGIN Callback 1 */
 
   /* USER CODE END Callback 1 */
+}
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
+
+  for (uint8_t i=0; i<packed_motores_size; i++) {
+    Motor_UpdateEncoder(motores[i], htim);
+  }
 }
 
 /**
