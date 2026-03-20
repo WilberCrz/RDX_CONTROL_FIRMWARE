@@ -1,5 +1,6 @@
 {
     "recommendations": [
-        "ms-vscode.cpp-devtools"
+        "ms-vscode.cpp-devtools",
+        "cschlosser.doxdocgen"
     ]
 }

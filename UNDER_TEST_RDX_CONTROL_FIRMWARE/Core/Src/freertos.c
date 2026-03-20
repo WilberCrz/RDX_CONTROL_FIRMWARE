@@ -19,6 +19,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "FreeRTOS.h"
+#include "cmsis_os2.h"
 #include "task.h"
 #include "main.h"
 #include "cmsis_os.h"
@@ -45,6 +46,20 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
+
+osThreadId_t TaskSbusHandle=NULL;
+osThreadId_t TaskMotorHandle=NULL;
+
+osThreadAttr_t SbusTaskAttr ={
+.name="SbusTask",
+.priority = (osPriority_t) osPriorityNormal,
+.stack_size =128*4,
+};
+osThreadAttr_t MotorTaskAttr ={
+.name="MotorTask",
+.priority = (osPriority_t) osPriorityAboveNormal,
+.stack_size =128*4,
+};
 
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
@@ -95,6 +110,7 @@ void MX_FREERTOS_Init(void) {
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
+  TaskSbusHandle=osThreadNew(, void *argument, const osThreadAttr_t *attr)
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
 

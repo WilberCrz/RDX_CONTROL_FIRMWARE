@@ -19,13 +19,10 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "adc.h"
-#include "cmsis_os.h"
 #include "dma.h"
 #include "gpio.h"
+#include "projdefs.h"
 #include "sbus.h"
-#include "stm32f3xx_hal_dma.h"
-#include "stm32f3xx_hal_tim.h"
-#include "stm32f3xx_hal_uart.h"
 #include "tim.h"
 #include "usart.h"
 
@@ -36,7 +33,8 @@
 #include "sbus.h"
 #include "task.h"
 #include <stdint.h>
-
+#include "cmsis_os2.h"
+#include "stm32f3xx.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -60,15 +58,17 @@
 
 MotorHandle_t motores[2];
 sbus_Handle sbus;
-uint16_t motor_struct_size;
+uint16_t motor_array_size;
+
 
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 void MX_FREERTOS_Init(void);
-/* USER CODE BEGIN PFP */
 
+/* USER CODE BEGIN PFP */
+void TaskRFSbus(void *Pvparameter);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -112,6 +112,7 @@ int main(void) {
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
+
 
   MotorConfig_t cfg_motores[2] = {
       [0] =
@@ -157,14 +158,15 @@ int main(void) {
 
           },
   };
-  motor_struct_size = (sizeof(cfg_motores) / sizeof(MotorConfig_t));
+  motor_array_size = (sizeof(cfg_motores) / sizeof(MotorConfig_t));
   sbus = init_sbus(&huart1);
   HAL_UARTEx_ReceiveToIdle_DMA(&huart1, getBuffer(sbus), 25);
   __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
 
-  for (uint8_t i = 0; i < motor_struct_size; i++) {
+  for (uint8_t i = 0; i < motor_array_size; i++) {
     motores[i] = Motor_Init(&cfg_motores[i]);
   }
+
 
   /* USER CODE END 2 */
 
@@ -237,20 +239,50 @@ void SystemClock_Config(void) {
 /********TAREAS BEGIN ***************** */
 // motor control PRIO 0
 void TaskMotorControl(void *Pvparameter) {
-  
+
+  TickType_t _xLastWakeTime = xTaskGetTickCount();
+  const TickType_t _xFrecuency = pdMS_TO_TICKS(5);
 
   for (;;) {
 
+    for (uint8_t i = 0; i < motor_array_size; i++) {
 
-    vTaskDelayUntil(TickType_t *const pxPreviousWakeTime, const TickType_t xTimeIncrement)
-  
+      ControllerLoop(motores[i], 0.005f);
+    }
+
+    vTaskDelayUntil(&_xLastWakeTime, _xFrecuency);
   }
-
 }
 // tarea RF PRIO 1
-void TaskRFSbus(void *Pvparameter) {}
+void TaskRFSbus(void *Pvparameter) {
+
+  TickType_t _xLastWakeTime = xTaskGetTickCount();
+  const TickType_t _xFrecuency = pdMS_TO_TICKS(20);
+
+  for (;;) {
+    taskENTER_CRITICAL();
+    uint16_t throttle = getAcc(sbus);
+    uint16_t dir = getDir(sbus);
+    taskEXIT_CRITICAL();
+
+    for (uint8_t i = 0; i < motor_array_size; i++) {
+
+      Motor_SetTargetSpeed(motores[i], 6);
+      Motor_SetTargetPosition(motores[i], 35);
+    }
+    vTaskDelayUntil(&_xLastWakeTime, _xFrecuency);
+  }
+}
 //  telemetria "velocidad,nivel de bateria,gps" PRIO 2
-void TaskTelemetria(void *Pvparameter) {}
+void TaskTelemetria(void *Pvparameter) {
+  TickType_t _xLastWakeTime = xTaskGetTickCount();
+  const TickType_t _xFrecuency = pdMS_TO_TICKS(500);
+  for (;;) {
+
+    vTaskDelayUntil(&_xLastWakeTime, _xFrecuency);
+  }
+}
+
 //  comunicacion Raspberry PRIO 3
 void TaskRaspyCom(void *Pvparamter) {}
 //  tareas completadas PRIO 4
@@ -260,9 +292,9 @@ void TaskFNComplete(void *Pvparamter) {}
 // CALLBACK PARA timer con canales configurados como Input Capture direct
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
 
-  for (uint8_t i = 0; i < motor_struct_size; i++) {
+  for (uint8_t i = 0; i < motor_array_size; i++) {
 
-    Motor_UpdateEncoder(motores[i],htim);
+    Motor_UpdateEncoder(motores[i], htim);
   }
 }
 
@@ -275,7 +307,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
       sbusParse(sbus);
     }
     HAL_UARTEx_ReceiveToIdle_DMA(huart, getBuffer(sbus), 25);
-    __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+    __HAL_DMA_DISABLE_IT(huart->hdmarx, DMA_IT_HT);
   }
 }
 /* USER CODE END 4 */
