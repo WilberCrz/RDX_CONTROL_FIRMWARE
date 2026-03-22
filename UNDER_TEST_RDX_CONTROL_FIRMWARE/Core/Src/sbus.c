@@ -107,13 +107,13 @@ uint8_t *getBuffer(sbus_Handle Handle) {
 
 uint16_t getAcc(sbus_Handle Handle){
 	if (Handle == NULL) return 0;
-	uint16_t rpm = map(Handle->Acel, 1788, 200, 0, 100);
+	uint16_t rpm = map(Handle->Acel, 1788, 200, 0, 290);
 
 	if(rpm < 10){
 		rpm = 0;
 	}
-	if(rpm > 90){
-		rpm = 100;
+	if(rpm > 285){
+		rpm = 290;
 	}
 	return rpm;
 };

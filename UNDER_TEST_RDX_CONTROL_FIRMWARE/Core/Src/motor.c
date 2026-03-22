@@ -40,6 +40,7 @@ struct Motor_t {
   bool is_enable;
   bool forward;
   bool has_fault;
+  bool is_parked;
 
   union {
     /****************motor modo steering ****************** */
@@ -109,6 +110,7 @@ MotorHandle_t Motor_Init(const MotorConfig_t *config) {
     motor->dirPin_B = config->dir_B;          // pin direccion B
     motor->max_pwm = config->max_pwm;
     motor->min_pwm = config->min_pwm;
+    motor->is_parked = 0;
 
     /*----------encoder-----------------------*/
     motor->motor_gear_ratio = config->gear_ratio;
@@ -291,12 +293,14 @@ void GetRPM_IT(MotorHandle_t handle) {
     return;
   }
   
-  float rpm = 60000000.0f / ((float)delta_ticks * (float)handle->enc_ppr_per_turn);
+  float rpm = 60000000.0f/ ((float)delta_ticks * (float)handle->enc_ppr_per_turn);
   if(handle->drive.current_speed_rpm == 0.0f){
     handle->drive.current_speed_rpm = rpm;
   }else{
-    handle->drive.current_speed_rpm = (handle->drive.current_speed_rpm * 0.8f) + (rpm * 0.2f);
+    handle->drive.current_speed_rpm = (handle->drive.current_speed_rpm * 0.90f) + (rpm * 0.10f);
   }
+
+  plot_current_rpm = handle->drive.current_speed_rpm;
   handle->drive.current_speed_rpm = rpm;
 }
 
@@ -329,6 +333,12 @@ static float RPM_PID(MotorHandle_t motor, float delta_time_SEC) {
   if (motor == NULL || motor->type != MOTOR_TYPE_DRIVE) {
     return 0.0f;
   }
+
+  if(motor->drive.target_speed_rpm == 0.0f){
+    motor->integral_error = 0.0f; // Reiniciar el error integral si el objetivo es detenerse
+    motor->previous_error = 0.0f; // Reiniciar el error previo
+    return 0.0f;
+  }
   // 1. Calculamos el Error (Diferencia entre lo que queremos y lo que tenemos)
   float error = motor->drive.target_speed_rpm - motor->drive.current_speed_rpm;
 
@@ -340,10 +350,16 @@ static float RPM_PID(MotorHandle_t motor, float delta_time_SEC) {
 
   // Anti-Windup (Evita que el error integral crezca hasta el infinito si el
   // motor se traba)
-  if (motor->integral_error > motor->max_pwm)
-    motor->integral_error = motor->max_pwm;
-  if (motor->integral_error < -motor->max_pwm)
-    motor->integral_error = -motor->max_pwm;
+  float max_i_memory = (float)motor->max_pwm * 0.4f;
+  if (motor->integral_error > max_i_memory){
+
+    motor->integral_error = max_i_memory;
+  }
+  if (motor->integral_error < -max_i_memory){
+
+    motor->integral_error = -max_i_memory;
+  }
+
 
   float i_term = motor->ki * motor->integral_error;
 
@@ -401,14 +417,15 @@ void ControllerLoop(MotorHandle_t handle, float delta_time_sec) {
   float pid_output = 0.0f;
   if (handle == NULL || !handle->is_enable)
     return;
-  handle->kp = tune_kp;
+
+  handle->kd  = tune_kd;
   handle->ki = tune_ki;
-  handle->kd = tune_kd;
+  handle->kp = tune_kp;
   if (handle->type == MOTOR_TYPE_DRIVE) {
     GetRPM_IT(handle);
 
     plot_target_rpm = handle->drive.target_speed_rpm;
-    plot_current_rpm = handle->drive.current_speed_rpm;
+
 
     pid_output = RPM_PID(handle, delta_time_sec);
 
@@ -420,6 +437,7 @@ void ControllerLoop(MotorHandle_t handle, float delta_time_sec) {
     GetDegrees_IT(handle);
     pid_output = STEER_PID(handle, delta_time_sec);
   }
+
 
 
   if(handle->forward){
@@ -436,6 +454,9 @@ void ControllerLoop(MotorHandle_t handle, float delta_time_sec) {
     final_pwm = 0;
   }
   plot_pwm = final_pwm;
+  if(handle->is_parked == 1){
+    final_pwm = 0;
+  }
   __HAL_TIM_SET_COMPARE(handle->pwm_tim, handle->pwm_channel, final_pwm);
 }
 bool Motor_GetState(MotorHandle_t handle) {

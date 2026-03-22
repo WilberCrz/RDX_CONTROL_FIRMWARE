@@ -21,7 +21,7 @@
 #include "cmsis_os.h"
 #include "adc.h"
 #include "dma.h"
-#include "stm32f3xx_hal_gpio.h"
+#include "stm32f3xx_hal_tim.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -124,7 +124,7 @@ int main(void)
               .dir_A = GPIO_PIN_10,
               .dir_B = GPIO_PIN_11,
               .enc_capture_tim = &htim1,
-              .enc_captureA_channel = TIM_CHANNEL_1,
+              .enc_captureA_channel = TIM_CHANNEL_2,
               .gear_ratio = 27,
               .enc_ppr = 16,
               .kp = 200,
@@ -144,7 +144,7 @@ int main(void)
               .dir_A = GPIO_PIN_10,
               .dir_B = GPIO_PIN_11,
               .enc_capture_tim = &htim1,
-              .enc_captureA_channel = TIM_CHANNEL_2,
+              .enc_captureA_channel = TIM_CHANNEL_3,
               .gear_ratio = 27,
               .enc_ppr = 16,
               .kp = 200,
