@@ -13,13 +13,21 @@
 #include "task.h"
 
 #include "stm32f3xx.h"
-#include "stm32f3xx_hal.h"
 
 #include "motor.h"
 #include "portable.h"
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
+
+// Variables para leer en la gráfica
+volatile float plot_target_rpm = 0.0f;
+volatile float plot_current_rpm = 0.0f;
+volatile float plot_pwm = 0.0f;
+
+volatile float tune_kp = 0.0f;
+volatile float tune_ki = 0.0f;
+volatile float tune_kd = 0.0f;
 
 struct Motor_t {
   int type;
@@ -147,7 +155,11 @@ MotorHandle_t Motor_Init(const MotorConfig_t *config) {
     motor->integral_error = 0.0f; // error acumulado
 
     HAL_TIM_PWM_Start(motor->pwm_tim, motor->pwm_channel);
-    __HAL_TIM_SET_COMPARE(motor->pwm_tim, motor->pwm_channel, 0);
+    __HAL_TIM_SET_COMPARE(motor->pwm_tim, motor->pwm_channel, 10000); // Iniciamos con un valor de PWM bajo para evitar movimientos bruscos al iniciar
+
+    if(motor->enc_capture_tim != NULL){
+      HAL_TIM_IC_Start_IT(motor->enc_capture_tim, motor->enc_captureA_channel);
+    }
 
     motor->is_enable = 1;
   }
@@ -191,6 +203,23 @@ void Motor_UpdateEncoder(MotorHandle_t handle, TIM_HandleTypeDef *_htim) {
   if (handle == NULL) {
     return;
   }
+  HAL_TIM_ActiveChannel active_channel = HAL_TIM_ACTIVE_CHANNEL_CLEARED;
+  switch (handle->enc_captureA_channel) {
+    case TIM_CHANNEL_1:
+      active_channel = HAL_TIM_ACTIVE_CHANNEL_1;
+      break;
+      case TIM_CHANNEL_2:
+      active_channel = HAL_TIM_ACTIVE_CHANNEL_2;
+      break;
+      case TIM_CHANNEL_3:
+      active_channel = HAL_TIM_ACTIVE_CHANNEL_3;
+      break;
+      case TIM_CHANNEL_4:
+      active_channel = HAL_TIM_ACTIVE_CHANNEL_4;
+      break;
+      default:
+      break;
+  };
   if (handle->enc_capture_tim->Instance == _htim->Instance &&
       handle->enc_captureA_channel == _htim->Channel) {
     switch (handle->type) {
@@ -244,10 +273,11 @@ void GetRPM_IT(MotorHandle_t handle) {
         (handle->enc_capture_tim->Instance->ARR - t1) + current_time + 1;
   }
 
-  if (time_since_pulse >= 100000) {
+  if (time_since_pulse >= 60000) {
     handle->drive.current_speed_rpm = 0.0f;
     return;
   }
+
   uint32_t delta_ticks = 0;
 
   if (t1 >= t0) {
@@ -260,8 +290,11 @@ void GetRPM_IT(MotorHandle_t handle) {
     handle->drive.current_speed_rpm = 0.0f;
     return;
   }
+  
   float rps = (float)delta_ticks / 1000000.0f;
   float rpm = (1.0f / handle->enc_ppr_per_turn) * (60.0f / rps);
+
+  plot_pwm=rpm;
   handle->drive.current_speed_rpm = rpm;
 }
 
@@ -366,29 +399,38 @@ void ControllerLoop(MotorHandle_t handle, float delta_time_sec) {
   float pid_output = 0.0f;
   if (handle == NULL || !handle->is_enable)
     return;
-
+  handle->kp = tune_kp;
+  handle->ki = tune_ki;
+  handle->kd = tune_kd;
   if (handle->type == MOTOR_TYPE_DRIVE) {
     GetRPM_IT(handle);
+
+    plot_target_rpm = handle->drive.target_speed_rpm;
+    plot_current_rpm = handle->drive.current_speed_rpm;
+
     pid_output = RPM_PID(handle, delta_time_sec);
+
+    if(pid_output < 0.0f){
+      pid_output = 0.0f;
+    }
   }
   if (handle->type == MOTOR_TYPE_STEER) {
     GetDegrees_IT(handle);
     pid_output = STEER_PID(handle, delta_time_sec);
   }
 
-  if (pid_output >= 0) {
-    handle->forward = 1;
+
+  if(handle->forward){
     HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_SET);
     HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_RESET);
-  } else {
-
+  }else{
     HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_SET);
   }
-  uint32_t final_pwm = (uint32_t)fabs(pid_output);
+  uint32_t final_pwm = (uint32_t)fabsf(pid_output);
   if (final_pwm > handle->max_pwm) {
     final_pwm = handle->max_pwm;
-  } else if (final_pwm < handle->min_pwm && final_pwm > 0) {
+  } else if (final_pwm < handle->min_pwm ) {
     final_pwm = 0;
   }
   __HAL_TIM_SET_COMPARE(handle->pwm_tim, handle->pwm_channel, final_pwm);
@@ -440,4 +482,11 @@ float Motor_GetCurrentPosition(MotorHandle_t handle) {
     return 0.0f;
   }
   return handle->steering.current_position_deg;
+}
+
+void Motor_SetDriveDirection(MotorHandle_t handle, bool is_forward) {
+  // Solo permitimos cambiar la dirección manualmente al motor de tracción
+  if (handle != NULL && handle->type == MOTOR_TYPE_DRIVE) {
+    handle->forward = is_forward;
+  }
 }

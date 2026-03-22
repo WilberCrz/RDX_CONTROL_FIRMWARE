@@ -25,6 +25,8 @@ uint8_t getbyte(sbus_Handle Handle, uint8_t num_byte);
 uint8_t getFailsafe(sbus_Handle Handle);
 uint8_t getFrameLost(sbus_Handle Handle);
 
+void sbus_commit_data(sbus_Handle Handle);
+
 
 
 

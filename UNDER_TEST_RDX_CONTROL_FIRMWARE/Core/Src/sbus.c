@@ -16,12 +16,13 @@
 #include <string.h>
 
 
+int16_t map(int16_t x, int16_t in_min, int16_t in_max, int16_t out_min, int16_t out_max);
 
 struct sbus_t {
 
 	UART_HandleTypeDef *uartHandle;
 	uint8_t rx_buffer[25];
-	uint8_t tx_buffer[25];
+	uint8_t process_buffer[25];
 	uint8_t lost;
 	uint8_t off;
 
@@ -51,7 +52,7 @@ sbus_Handle init_sbus(UART_HandleTypeDef *UART_Handle) {
 		sbus->off = 0;
 
 		memset(sbus->rx_buffer, 0, sizeof(sbus->rx_buffer));
-		memset(sbus->tx_buffer, 0, sizeof(sbus->tx_buffer));
+		memset(sbus->process_buffer, 0, sizeof(sbus->process_buffer));
 		memset(sbus->canales, 0, sizeof(sbus->canales));
 
 		sbus->uartHandle = UART_Handle;
@@ -99,28 +100,50 @@ uint8_t *getBuffer(sbus_Handle Handle) {
 
 uint16_t getAcc(sbus_Handle Handle){
 	if (Handle == NULL) return 0;
+	uint16_t rpm = map(Handle->Acel, 1788, 200, 0, 100);
 
-	return Handle->Acel;
-
+	if(rpm < 10){
+		rpm = 0;
+	}
+	if(rpm > 90){
+		rpm = 100;
+	}
+	return rpm;
 };
+
+// Función clásica para escalar valores
+int16_t map(int16_t x, int16_t in_min, int16_t in_max, int16_t out_min, int16_t out_max) {
+    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
 
 
 uint16_t getDir(sbus_Handle Handle) {
 	if (Handle == NULL) return 0;
-
-	return Handle->Direc;
-
-
+	if(Handle->Direc < 1000){
+		return 1;
+	}
+	return 0;
 };
 
 
 uint16_t getGiro(sbus_Handle Handle) {
 	if (Handle == NULL) return 0;
 
-	return Handle->Giro;
+	uint16_t giro = map(Handle->Giro, 200, 1800, 0, 180);
 
-};
+	if(giro>87 && giro < 93){
+		giro = 90;
+	}
 
+	if(giro < 0) {
+		giro = 0;
+	}
+	if(giro > 180){
+		giro = 180;
+	}
+	return giro;
+
+}
 
 
 uint16_t getChannel(sbus_Handle Handle , uint8_t num_Channel) {
@@ -140,26 +163,26 @@ void sbusParse(sbus_Handle Handle) {
 
 	if (Handle == NULL) return;
 
-	if (Handle->rx_buffer[0] == 0x0F && Handle->rx_buffer[24] == 0x00 ) {
+	if (Handle->process_buffer[0] == 0x0F && Handle->process_buffer[24] == 0x00 ) {
 
-		Handle->canales[0] = (Handle->rx_buffer[1] | ( Handle->rx_buffer[2] & 0x07) << 8 );
-		Handle->canales[1] = ((Handle->rx_buffer[2] >> 3 | Handle->rx_buffer[3] << 5 ) & 0x07FF);
-		Handle->canales[2] = ((Handle->rx_buffer[3] >> 6 | Handle->rx_buffer[4] << 2  | Handle->rx_buffer[5] <<10) & 0x07FF);
-		Handle->canales[3] = ((Handle->rx_buffer[5] >> 1 | Handle->rx_buffer[6] << 7) & 0x07FF);
-		Handle->canales[4] = ((Handle->rx_buffer[6] >> 4 | Handle->rx_buffer[7] << 4) & 0x07FF);
-		Handle->canales[5] = ((Handle->rx_buffer[7] >> 7 | Handle->rx_buffer[8] << 1 | Handle->rx_buffer[9] << 9) & 0x07FF);
-		Handle->canales[6] = ((Handle->rx_buffer[9] >> 2 | Handle->rx_buffer[10] << 6 ) & 0x07FF);
-		Handle->canales[7] = ((Handle->rx_buffer[10] >> 5 | Handle->rx_buffer[11] << 3 ) & 0x07FF);
-		Handle->canales[8] = ((Handle->rx_buffer[12] | Handle->rx_buffer[13] << 8 ) & 0x07FF);
-		Handle->canales[9] = ((Handle->rx_buffer[13] >> 3 | Handle->rx_buffer[14] << 5 ) & 0x07FF);
+		Handle->canales[0] = (Handle->process_buffer[1]       |(Handle->process_buffer[2] & 0x07) << 8 );
+		Handle->canales[1] = ((Handle->process_buffer[2] >> 3 | Handle->process_buffer[3] << 5 ) & 0x07FF);
+		Handle->canales[2] = ((Handle->process_buffer[3] >> 6 | Handle->process_buffer[4] << 2  | Handle->process_buffer[5] <<10) & 0x07FF);
+		Handle->canales[3] = ((Handle->process_buffer[5] >> 1 | Handle->process_buffer[6] << 7) & 0x07FF);
+		Handle->canales[4] = ((Handle->process_buffer[6] >> 4 | Handle->process_buffer[7] << 4) & 0x07FF);
+		Handle->canales[5] = ((Handle->process_buffer[7] >> 7 | Handle->process_buffer[8] << 1 | Handle->process_buffer[9] << 9) & 0x07FF);
+		Handle->canales[6] = ((Handle->process_buffer[9] >> 2 | Handle->process_buffer[10] << 6 ) & 0x07FF);
+		Handle->canales[7] = ((Handle->process_buffer[10] >> 5| Handle->process_buffer[11] << 3 ) & 0x07FF);
+		Handle->canales[8] = ((Handle->process_buffer[12]     | Handle->process_buffer[13] << 8 ) & 0x07FF);
+		Handle->canales[9] = ((Handle->process_buffer[13] >> 3| Handle->process_buffer[14] << 5 ) & 0x07FF);
 
 
 		Handle->lost = Handle->rx_buffer[23] & (1 <<2);
 		Handle->off = Handle->rx_buffer[23] & (1 <<3);
 
-		Handle->Direc = Handle->canales[0];
+		Handle->Direc = Handle->canales[9];
 		Handle->Acel = Handle->canales[2];
-		Handle->Giro = Handle->canales[3];
+		Handle->Giro = Handle->canales[0];
 
 
 	}
@@ -168,4 +191,11 @@ void sbusParse(sbus_Handle Handle) {
 
 USART_TypeDef* sbusGetUartHandle(sbus_Handle Handle){
 	return  Handle->uartHandle->Instance;
+}
+
+void sbus_commit_data(sbus_Handle Handle) {
+
+	if (Handle == NULL) return;
+	memcpy(Handle->process_buffer, Handle->rx_buffer, 25);
+
 }

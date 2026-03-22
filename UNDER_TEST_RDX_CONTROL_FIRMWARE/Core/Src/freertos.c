@@ -19,14 +19,14 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "FreeRTOS.h"
-#include "cmsis_os2.h"
 #include "task.h"
 #include "main.h"
 #include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "motor.h"
+#include "sbus.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -47,19 +47,45 @@
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
 
-osThreadId_t TaskSbusHandle=NULL;
-osThreadId_t TaskMotorHandle=NULL;
+extern MotorHandle_t motores[2];
+extern sbus_Handle sbus;
+extern uint16_t motor_array_size;
+volatile uint16_t throttle = 0;
+volatile uint16_t dir = 0;
+volatile uint8_t task_heartbeat = 0;
+volatile uint16_t giro = 0;
 
-osThreadAttr_t SbusTaskAttr ={
-.name="SbusTask",
-.priority = (osPriority_t) osPriorityNormal,
-.stack_size =128*4,
+osThreadId_t xMotorTaskHandle = NULL;
+const osThreadAttr_t xMotorTask_attributes = {
+  .name = "MotorTask",
+  .stack_size = 256 * 4,
+  .priority = (osPriority_t) osPriorityHigh,
 };
-osThreadAttr_t MotorTaskAttr ={
-.name="MotorTask",
-.priority = (osPriority_t) osPriorityAboveNormal,
-.stack_size =128*4,
+osThreadId_t xSbusTaskHandle = NULL;
+const osThreadAttr_t xSbusTask_attributes = {
+  .name = "SbusTask",
+  .stack_size = 256 * 4,
+  .priority = (osPriority_t) osPriorityAboveNormal,
 };
+osThreadId_t xTelemetryTaskHandle = NULL;
+const osThreadAttr_t xTelemetryTask_attributes = {
+  .name = "TelemetryTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+osThreadId_t xRaspyComTaskHandle = NULL;
+const osThreadAttr_t xRaspyComTask_attributes = {
+  .name = "RaspyComTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityBelowNormal,
+};
+osThreadId_t xFNCompleteTaskHandle = NULL;
+const osThreadAttr_t xFNCompleteTask_attributes = {
+  .name = "FNCompleteTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityIdle,
+};
+
 
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
@@ -72,6 +98,11 @@ const osThreadAttr_t defaultTask_attributes = {
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
+void TaskMotorControl(void *pvParameters);
+void TaskRFSbus(void *pvParameters);
+void TaskTelemetria(void *pvParameters);
+void TaskRaspyCom(void *pvParameters);
+void TaskFNComplete(void *pvParameters);
 
 /* USER CODE END FunctionPrototypes */
 
@@ -110,7 +141,21 @@ void MX_FREERTOS_Init(void) {
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  TaskSbusHandle=osThreadNew(, void *argument, const osThreadAttr_t *attr)
+
+  xMotorTaskHandle = osThreadNew(TaskMotorControl, NULL, &xMotorTask_attributes);
+
+  // 2. Tarea de Radiofrecuencia SBUS (Prioridad alta)
+ xSbusTaskHandle = osThreadNew(TaskRFSbus, NULL, &xSbusTask_attributes);  
+
+  // 3. Tarea de Telemetría (Prioridad media)
+  xTelemetryTaskHandle = osThreadNew(TaskTelemetria, NULL, &xTelemetryTask_attributes);
+
+  // 4. Tarea de Comunicación con Raspberry (Prioridad media-baja)
+  xRaspyComTaskHandle = osThreadNew(TaskRaspyCom, NULL, &xRaspyComTask_attributes);
+
+  // 5. Tareas Completadas / Background (Prioridad mínima)
+  xFNCompleteTaskHandle = osThreadNew(TaskFNComplete, NULL, &xFNCompleteTask_attributes);
+
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
 
@@ -140,6 +185,84 @@ void StartDefaultTask(void *argument)
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
+/********TAREAS BEGIN ***************** */
+
+// ----------------------------------------------------------------------------
+// TAREA 1: CONTROL DE MOTORES (Frecuencia: 5 ms)
+// ----------------------------------------------------------------------------
+void TaskMotorControl(void *Pvparameter) {
+
+uint32_t tick = osKernelGetTickCount();
+  for (;;) {
+
+    for (uint8_t i = 0; i < motor_array_size; i++) {
+
+      ControllerLoop(motores[i], 0.005f);
+    }
+    tick +=5U;
+    osDelayUntil(tick);
+  }
+}
+
+// ----------------------------------------------------------------------------
+// TAREA 2: LECTURA SBUS Y COMANDOS (Frecuencia: 20 ms)
+// ----------------------------------------------------------------------------
+void TaskRFSbus(void *Pvparameter) {
+
+  for (;;) {
+
+    sbusParse(sbus);
+    taskENTER_CRITICAL();
+    uint16_t value = getAcc(sbus);
+    uint16_t gvalue = getGiro(sbus);
+    uint16_t is_forward = getDir(sbus);
+    taskEXIT_CRITICAL();
+
+    throttle = (value>1025)?0:value; // Limitar a 1024 para evitar valores negativos por overflow
+    dir=is_forward;
+    giro = (gvalue>181)?0:gvalue;
+    for (uint8_t i = 0; i < motor_array_size; i++) {
+
+      Motor_SetTargetSpeed(motores[i],(float)throttle); // Escalamos a porcentaje
+      Motor_SetTargetPosition(motores[i], (float)giro); // Escalamos a grados
+      Motor_SetDriveDirection(motores[i], (is_forward==1));
+    }
+    osDelay(20U);
+  }
+}
+
+// ----------------------------------------------------------------------------
+// TAREA 3: TELEMETRÍA (Frecuencia: 500 ms)
+// ----------------------------------------------------------------------------
+void TaskTelemetria(void *Pvparameter) {
+
+  for (;;) {
+
+    osDelay(500U);
+  }
+}
+
+// ----------------------------------------------------------------------------
+// TAREA 4: COMUNICACIÓN RASPBERRY PI
+// ----------------------------------------------------------------------------
+void TaskRaspyCom(void *Pvparamter) {
+
+  for(;;){
+
+    osDelay(1000U);
+  }
+}
+
+// ----------------------------------------------------------------------------
+// TAREA 5: FUNCIONES COMPLETADAS
+// ----------------------------------------------------------------------------
+void TaskFNComplete(void *Pvparamter) {
+
+  for(;;){
+    osDelay(1000U);
+  }
+}
+/************TAREAS END**************** */
 
 /* USER CODE END Application */
 

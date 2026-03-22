@@ -135,4 +135,11 @@ void SetMaxDegres(MotorHandle_t handle, uint32_t max_degrees);
  * @param delta_time_sec periodo de tiempo para calculo de pid clasico con transformada de laplace
  */
 void ControllerLoop(MotorHandle_t handle, float delta_time_sec);
+/**
+ * @brief 
+ * 
+ * @param handle 
+ * @param is_forward 
+ */
+void Motor_SetDriveDirection(MotorHandle_t handle, bool is_forward);
 #endif

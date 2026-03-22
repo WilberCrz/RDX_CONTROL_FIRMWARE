@@ -1,6 +1,8 @@
 {
     "recommendations": [
         "ms-vscode.cpp-devtools",
-        "cschlosser.doxdocgen"
+        "cschlosser.doxdocgen",
+        "marus25.cortex-debug",
+        "stmicroelectronics.stm32cube-ide-debug-stlink-gdbserver"
     ]
 }
