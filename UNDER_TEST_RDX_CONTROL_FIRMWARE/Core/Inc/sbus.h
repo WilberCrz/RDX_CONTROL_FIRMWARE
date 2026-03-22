@@ -15,7 +15,8 @@ void sbusParse(sbus_Handle Handle);
 
 
 uint16_t getAcc(sbus_Handle Handle);
-uint16_t getDir(sbus_Handle Handle);
+uint8_t getDir(sbus_Handle Handle);
+uint8_t getparking(sbus_Handle Handle);
 uint16_t getGiro(sbus_Handle Handle);
 uint16_t getChannel(sbus_Handle Handle , uint8_t num_Channel);
 uint8_t *getBuffer(sbus_Handle Handle);

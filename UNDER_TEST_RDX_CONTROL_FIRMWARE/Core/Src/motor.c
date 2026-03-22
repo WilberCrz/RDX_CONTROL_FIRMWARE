@@ -106,7 +106,7 @@ MotorHandle_t Motor_Init(const MotorConfig_t *config) {
     motor->dir_portA = config->dir_portA;     // puerto de pin de direccion A
     motor->dir_portB = config->dir_portB;     // puerto de pin de direccion B
     motor->dirPin_A = config->dir_A;          // pin direccion A
-    motor->dirPin_B = config->dir_b;          // pin direccion B
+    motor->dirPin_B = config->dir_B;          // pin direccion B
     motor->max_pwm = config->max_pwm;
     motor->min_pwm = config->min_pwm;
 
@@ -221,7 +221,7 @@ void Motor_UpdateEncoder(MotorHandle_t handle, TIM_HandleTypeDef *_htim) {
       break;
   };
   if (handle->enc_capture_tim->Instance == _htim->Instance &&
-      handle->enc_captureA_channel == _htim->Channel) {
+      active_channel == _htim->Channel) {
     switch (handle->type) {
     case MOTOR_TYPE_DRIVE: {
 
@@ -291,10 +291,12 @@ void GetRPM_IT(MotorHandle_t handle) {
     return;
   }
   
-  float rps = (float)delta_ticks / 1000000.0f;
-  float rpm = (1.0f / handle->enc_ppr_per_turn) * (60.0f / rps);
-
-  plot_pwm=rpm;
+  float rpm = 60000000.0f / ((float)delta_ticks * (float)handle->enc_ppr_per_turn);
+  if(handle->drive.current_speed_rpm == 0.0f){
+    handle->drive.current_speed_rpm = rpm;
+  }else{
+    handle->drive.current_speed_rpm = (handle->drive.current_speed_rpm * 0.8f) + (rpm * 0.2f);
+  }
   handle->drive.current_speed_rpm = rpm;
 }
 
@@ -433,6 +435,7 @@ void ControllerLoop(MotorHandle_t handle, float delta_time_sec) {
   } else if (final_pwm < handle->min_pwm ) {
     final_pwm = 0;
   }
+  plot_pwm = final_pwm;
   __HAL_TIM_SET_COMPARE(handle->pwm_tim, handle->pwm_channel, final_pwm);
 }
 bool Motor_GetState(MotorHandle_t handle) {

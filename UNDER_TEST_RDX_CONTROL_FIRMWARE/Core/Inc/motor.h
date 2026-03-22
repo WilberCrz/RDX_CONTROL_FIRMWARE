@@ -32,7 +32,7 @@ typedef struct {
   GPIO_TypeDef *dir_portA;
   GPIO_TypeDef *dir_portB;
   uint16_t dir_A;
-  uint16_t dir_b;
+  uint16_t dir_B;
 
   TIM_HandleTypeDef *enc_capture_tim;
   uint16_t enc_captureA_channel;

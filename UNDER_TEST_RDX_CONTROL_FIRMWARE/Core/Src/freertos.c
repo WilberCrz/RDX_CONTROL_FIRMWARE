@@ -212,20 +212,37 @@ void TaskRFSbus(void *Pvparameter) {
   for (;;) {
 
     sbusParse(sbus);
-    taskENTER_CRITICAL();
-    uint16_t value = getAcc(sbus);
-    uint16_t gvalue = getGiro(sbus);
-    uint16_t is_forward = getDir(sbus);
-    taskEXIT_CRITICAL();
 
-    throttle = (value>1025)?0:value; // Limitar a 1024 para evitar valores negativos por overflow
-    dir=is_forward;
-    giro = (gvalue>181)?0:gvalue;
+    uint8_t is_forward =1;
+    uint8_t parking = 0;
+    if(getFailsafe(sbus)){
+      throttle = 0;
+      dir = 0;
+      giro = 90; // Posición neutral para dirección
+    }else{
+      taskENTER_CRITICAL();
+      uint16_t value = getAcc(sbus);
+      uint16_t gvalue = getGiro(sbus);
+      is_forward = getDir(sbus);
+      parking = getparking(sbus);
+      taskEXIT_CRITICAL();
+      if(parking){
+        throttle = 0;
+        dir = 0;
+        giro = 90; // Posición neutral para dirección
+      }else{
+      throttle = (value>1025)?0:value; // Limitar a 1024 para evitar valores negativos por overflow
+      dir=is_forward;
+      giro = (gvalue>181)?0:gvalue;
+      }
+
+    }
+
     for (uint8_t i = 0; i < motor_array_size; i++) {
 
       Motor_SetTargetSpeed(motores[i],(float)throttle); // Escalamos a porcentaje
       Motor_SetTargetPosition(motores[i], (float)giro); // Escalamos a grados
-      Motor_SetDriveDirection(motores[i], (is_forward==1));
+      Motor_SetDriveDirection(motores[i], is_forward);
     }
     osDelay(20U);
   }

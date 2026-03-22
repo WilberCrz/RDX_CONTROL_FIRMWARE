@@ -21,7 +21,7 @@
 #include "cmsis_os.h"
 #include "adc.h"
 #include "dma.h"
-#include "stm32f3xx_hal_tim.h"
+#include "stm32f3xx_hal_gpio.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -121,12 +121,12 @@ int main(void)
               .pwm_channel = TIM_CHANNEL_1,
               .dir_portA = GPIOC,
               .dir_portB = GPIOC,
-              .dir_A = 10,
-              .dir_b = 11,
+              .dir_A = GPIO_PIN_10,
+              .dir_B = GPIO_PIN_11,
               .enc_capture_tim = &htim1,
               .enc_captureA_channel = TIM_CHANNEL_1,
-              .gear_ratio = 50,
-              .enc_ppr = 200,
+              .gear_ratio = 27,
+              .enc_ppr = 16,
               .kp = 200,
               .ki = 0,
               .kd = 0,
@@ -141,12 +141,12 @@ int main(void)
               .pwm_channel = TIM_CHANNEL_2,
               .dir_portA = GPIOC,
               .dir_portB = GPIOC,
-              .dir_A = 10,
-              .dir_b = 11,
+              .dir_A = GPIO_PIN_10,
+              .dir_B = GPIO_PIN_11,
               .enc_capture_tim = &htim1,
               .enc_captureA_channel = TIM_CHANNEL_2,
-              .gear_ratio = 50,
-              .enc_ppr = 200,
+              .gear_ratio = 27,
+              .enc_ppr = 16,
               .kp = 200,
               .ki = 0,
               .kd = 0,
@@ -247,9 +247,23 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t size) {
   if (sbusGetUartHandle(sbus) == huart->Instance) {
     uint8_t *buff = getBuffer(sbus);
-    if (size == 25 && buff[0] == 0x0F) { // Verificar byte de inicio
+    if (size == 25 && buff[0] == 0x0F && buff[24] == 0x00) { // Verificar byte de inicio y fin
       sbus_commit_data(sbus);
+    }else {
+    
     }
+    HAL_UARTEx_ReceiveToIdle_DMA(huart, getBuffer(sbus), 25);
+    __HAL_DMA_DISABLE_IT(huart->hdmarx, DMA_IT_HT);
+  }
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
+  if (sbusGetUartHandle(sbus) == huart->Instance) {
+    __HAL_UART_CLEAR_OREFLAG(huart);
+    __HAL_UART_CLEAR_NEFLAG(huart);
+    __HAL_UART_CLEAR_FEFLAG(huart);
+    __HAL_UART_CLEAR_PEFLAG(huart);
+    // Reiniciar la recepción en caso de error
     HAL_UARTEx_ReceiveToIdle_DMA(huart, getBuffer(sbus), 25);
     __HAL_DMA_DISABLE_IT(huart->hdmarx, DMA_IT_HT);
   }

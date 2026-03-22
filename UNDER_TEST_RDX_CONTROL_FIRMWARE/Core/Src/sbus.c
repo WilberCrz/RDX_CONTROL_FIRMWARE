@@ -13,6 +13,7 @@
 #include "stm32f3xx_hal_uart.h"
 #include "usart.h"
 #include "sbus.h"
+#include "cmsis_os.h"
 #include <string.h>
 
 
@@ -27,9 +28,10 @@ struct sbus_t {
 	uint8_t off;
 
 	uint16_t Acel;
-	uint16_t Direc;
+	uint8_t states;
 	uint16_t Giro;
 	uint16_t canales[10];
+	uint32_t last_packet_tick;
 
 
 };
@@ -46,10 +48,11 @@ sbus_Handle init_sbus(UART_HandleTypeDef *UART_Handle) {
 	if (sbus != NULL) {
 
 		sbus->Acel = 0;
-		sbus->Direc = 0;
+		sbus->states = 0;
 		sbus->Giro = 0;
 		sbus->lost = 0;
 		sbus->off = 0;
+		sbus->last_packet_tick = 0;
 
 		memset(sbus->rx_buffer, 0, sizeof(sbus->rx_buffer));
 		memset(sbus->process_buffer, 0, sizeof(sbus->process_buffer));
@@ -67,6 +70,10 @@ sbus_Handle init_sbus(UART_HandleTypeDef *UART_Handle) {
 
 uint8_t getFailsafe(sbus_Handle Handle) {
     if (Handle == NULL) return 1;
+	uint32_t current_tick = osKernelGetTickCount();
+	if(current_tick - Handle->last_packet_tick > 100) { // Si han pasado más de 100 ms desde el último paquete válido
+		return 1; // Failsafe activado
+	}
     return (Handle->off != 0);
 }
 
@@ -117,9 +124,9 @@ int16_t map(int16_t x, int16_t in_min, int16_t in_max, int16_t out_min, int16_t 
 }
 
 
-uint16_t getDir(sbus_Handle Handle) {
+uint8_t getDir(sbus_Handle Handle) {
 	if (Handle == NULL) return 0;
-	if(Handle->Direc < 1000){
+	if(Handle->states & (1<<0)){
 		return 1;
 	}
 	return 0;
@@ -145,6 +152,14 @@ uint16_t getGiro(sbus_Handle Handle) {
 
 }
 
+uint8_t getparking(sbus_Handle Handle) {
+	if (Handle == NULL) return 0;
+	if(Handle->states & (1<<1)){
+		return 1;
+	}
+	return 0;
+};
+
 
 uint16_t getChannel(sbus_Handle Handle , uint8_t num_Channel) {
 	if (Handle == NULL) return 0;
@@ -163,7 +178,6 @@ void sbusParse(sbus_Handle Handle) {
 
 	if (Handle == NULL) return;
 
-	if (Handle->process_buffer[0] == 0x0F && Handle->process_buffer[24] == 0x00 ) {
 
 		Handle->canales[0] = (Handle->process_buffer[1]       |(Handle->process_buffer[2] & 0x07) << 8 );
 		Handle->canales[1] = ((Handle->process_buffer[2] >> 3 | Handle->process_buffer[3] << 5 ) & 0x07FF);
@@ -177,15 +191,25 @@ void sbusParse(sbus_Handle Handle) {
 		Handle->canales[9] = ((Handle->process_buffer[13] >> 3| Handle->process_buffer[14] << 5 ) & 0x07FF);
 
 
-		Handle->lost = Handle->rx_buffer[23] & (1 <<2);
-		Handle->off = Handle->rx_buffer[23] & (1 <<3);
+		Handle->lost = Handle->process_buffer[23] & (1 <<2);
+		Handle->off = Handle->process_buffer[23] & (1 <<3);
 
-		Handle->Direc = Handle->canales[9];
 		Handle->Acel = Handle->canales[2];
 		Handle->Giro = Handle->canales[0];
+		
+		if(Handle->canales[9] < 1000){
+			Handle->states |= (1<<0); // Establecer bit 0 para dirección adelante
+		} else {
+			Handle->states &= ~(1<<0); // Limpiar bit 0 para dirección atrás
+		}
+
+		if (Handle->canales[8]>1500) {
+			Handle->states |= (1<<1);
+		}else{
+			Handle->states &= ~(1<<1);
+		}
 
 
-	}
 
 }
 
@@ -197,5 +221,6 @@ void sbus_commit_data(sbus_Handle Handle) {
 
 	if (Handle == NULL) return;
 	memcpy(Handle->process_buffer, Handle->rx_buffer, 25);
+	Handle->last_packet_tick = osKernelGetTickCount(); // Actualizar el tick del último paquete válido
 
 }
