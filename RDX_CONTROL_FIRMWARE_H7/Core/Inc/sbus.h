@@ -2,7 +2,7 @@
 #define SBUS_H
 
 
-#include "stm32g4xx_hal.h"
+#include "stm32h7xx.h"
 #include <stdint.h>
 
 typedef struct sbus_t *sbus_Handle;
@@ -14,14 +14,17 @@ void sbusParse(sbus_Handle Handle);
 
 
 uint16_t getAcc(sbus_Handle Handle);
-uint16_t getDir(sbus_Handle Handle);
+uint8_t getDir(sbus_Handle Handle);
+uint8_t sbus_GetState(sbus_Handle Handle);
 uint16_t getGiro(sbus_Handle Handle);
 uint16_t getChannel(sbus_Handle Handle , uint8_t num_Channel);
 uint8_t *getBuffer(sbus_Handle Handle);
 
-uint8_t getbyte(sbus_Handle Handle, uint8_t num_byte);
+USART_TypeDef* sbusGetUartHandle(sbus_Handle Handle);
 uint8_t getFailsafe(sbus_Handle Handle);
 uint8_t getFrameLost(sbus_Handle Handle);
+
+void sbus_commit_data(sbus_Handle Handle);
 
 
 
@@ -55,5 +58,4 @@ uint8_t getFrameLost(sbus_Handle Handle);
 
 
 #endif
-
 

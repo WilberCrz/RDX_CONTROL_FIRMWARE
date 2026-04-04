@@ -45,6 +45,9 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ./Core/Src/motor.c
+    ./Core/Src/sbus.c
+    ./Core/Src/AdcCapture.c
+    ./Core/Src/toRaspy.c
 )
 
 # Add include paths

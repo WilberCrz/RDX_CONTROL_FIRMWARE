@@ -9,18 +9,30 @@
  *
  */
 
-#include "FreeRTOS.h"
-#include "task.h"
-
-
-#include "stm32h743xx.h"
-#include "stm32h7xx_hal.h"
+#include "stm32h7xx.h"
 
 #include "motor.h"
-#include "portable.h"
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
+
+// Variables para leer en la gráfica
+volatile float plot_target_rpm = 0.0f;
+volatile float plot_current_rpm = 0.0f;
+volatile float plot_pwm = 0.0f;
+volatile float rpm_target = 0.0f;
+
+volatile float plot_pwm_dir = 0.0f;
+volatile float plot_target_dir = 0.0f;
+volatile float plot_current_dir = 0.0f;
+
+volatile float tune_kp_drive = 0.0f;
+volatile float tune_ki_drive = 0.0f;
+volatile float tune_kd_drive = 0.0f;
+
+volatile float tune_kp_steer = 0.0f;
+volatile float tune_ki_steer = 0.0f;
+volatile float tune_kd_steer = 0.0f;
 
 struct Motor_t {
   int type;
@@ -30,9 +42,10 @@ struct Motor_t {
   GPIO_TypeDef *dir_portB;
   uint16_t dirPin_A;
   uint16_t dirPin_B;
+  float smooth_target_speed_rpm;
+  float max_acceleration_rpm_per_sec;
+  uint8_t states;
   bool is_enable;
-  bool forward;
-  bool has_fault;
 
   union {
     /****************motor modo steering ****************** */
@@ -84,6 +97,7 @@ struct Motor_t {
   /***********************variables para PID ****************** */
   float integral_error;
   float previous_error;
+  uint32_t boost_pwm;
   uint32_t max_pwm;
   uint32_t min_pwm;
 };
@@ -91,7 +105,7 @@ struct Motor_t {
 MotorHandle_t Motor_Init(const MotorConfig_t *config) {
   if (config == NULL)
     return NULL;
-  MotorHandle_t motor = (MotorHandle_t)pvPortMalloc(sizeof(struct Motor_t));
+  MotorHandle_t motor = (MotorHandle_t)malloc(sizeof(struct Motor_t));
   if (motor != NULL) {
     motor->type = config->type;               // roll del motor
     motor->pwm_tim = config->pwm_tim;         // pwm_timer
@@ -99,9 +113,11 @@ MotorHandle_t Motor_Init(const MotorConfig_t *config) {
     motor->dir_portA = config->dir_portA;     // puerto de pin de direccion A
     motor->dir_portB = config->dir_portB;     // puerto de pin de direccion B
     motor->dirPin_A = config->dir_A;          // pin direccion A
-    motor->dirPin_B = config->dir_b;          // pin direccion B
+    motor->dirPin_B = config->dir_B;          // pin direccion B
     motor->max_pwm = config->max_pwm;
     motor->min_pwm = config->min_pwm;
+    motor->boost_pwm = config->boost_pwm;
+    motor->states = 0;
 
     /*----------encoder-----------------------*/
     motor->motor_gear_ratio = config->gear_ratio;
@@ -134,6 +150,8 @@ MotorHandle_t Motor_Init(const MotorConfig_t *config) {
     if (motor->type == MOTOR_TYPE_DRIVE) {
       motor->drive.current_speed_rpm = 0.0f;
       motor->drive.target_speed_rpm = 0.0f;
+      motor->smooth_target_speed_rpm = 0.0f;
+      motor->max_acceleration_rpm_per_sec = 1000.0f;
 
       /*----------------Encoder drive mode-----------------*/
       motor->enc_drive.ticks_time[0] = 0;
@@ -148,7 +166,13 @@ MotorHandle_t Motor_Init(const MotorConfig_t *config) {
     motor->integral_error = 0.0f; // error acumulado
 
     HAL_TIM_PWM_Start(motor->pwm_tim, motor->pwm_channel);
-    __HAL_TIM_SET_COMPARE(motor->pwm_tim, motor->pwm_channel, 0);
+    __HAL_TIM_SET_COMPARE(motor->pwm_tim, motor->pwm_channel,
+                          0); // Iniciamos con un valor de PWM bajo para evitar
+                              // movimientos bruscos al iniciar
+
+    if (motor->enc_capture_tim != NULL) {
+      HAL_TIM_IC_Start_IT(motor->enc_capture_tim, motor->enc_captureA_channel);
+    }
 
     motor->is_enable = 1;
   }
@@ -159,18 +183,19 @@ void Motor_Destroy(MotorHandle_t handle) {
   if (handle == NULL)
     return;
 
-  HAL_TIM_PWM_Stop(handle->pwm_tim, handle->pwm_channel);
   __HAL_TIM_SET_COMPARE(handle->pwm_tim, handle->pwm_channel, 0);
+  HAL_TIM_PWM_Stop(handle->pwm_tim, handle->pwm_channel);
 
   HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_RESET);
   handle->is_enable = 0;
-  vPortFree(handle);
+  free(handle);
 }
 
 void Motor_SetTargetSpeed(MotorHandle_t handle, float speed_rpm) {
   if (handle != NULL && handle->type == MOTOR_TYPE_DRIVE && handle->is_enable) {
     handle->drive.target_speed_rpm = speed_rpm;
+    rpm_target = handle->drive.target_speed_rpm;
   }
 }
 
@@ -189,44 +214,64 @@ void Motor_SetTargetPosition(MotorHandle_t handle, float angle_degrees) {
 }
 
 void Motor_UpdateEncoder(MotorHandle_t handle, TIM_HandleTypeDef *_htim) {
-  if (handle->enc_capture_tim->Instance == _htim->Instance) {
-    
-  switch (handle->type) {
-  case MOTOR_TYPE_DRIVE: {
-
-    uint32_t captured_time = HAL_TIM_ReadCapturedValue(
-        handle->enc_capture_tim, handle->enc_captureA_channel);
-
-    handle->enc_drive.ticks_time[0] = handle->enc_drive.ticks_time[1];
-    handle->enc_drive.ticks_time[1] = captured_time;
-    break;
+  if (handle == NULL) {
+    return;
   }
-
-  case MOTOR_TYPE_STEER:
-    if (handle->forward) {
-      handle->enc_steering.pulses++;
-    } else {
-
-      handle->enc_steering.pulses--;
-    }
+  HAL_TIM_ActiveChannel active_channel = HAL_TIM_ACTIVE_CHANNEL_CLEARED;
+  switch (handle->enc_captureA_channel) {
+  case TIM_CHANNEL_1:
+    active_channel = HAL_TIM_ACTIVE_CHANNEL_1;
+    break;
+  case TIM_CHANNEL_2:
+    active_channel = HAL_TIM_ACTIVE_CHANNEL_2;
+    break;
+  case TIM_CHANNEL_3:
+    active_channel = HAL_TIM_ACTIVE_CHANNEL_3;
+    break;
+  case TIM_CHANNEL_4:
+    active_channel = HAL_TIM_ACTIVE_CHANNEL_4;
     break;
   default:
-    return;
     break;
-  }
+  };
+  if (handle->enc_capture_tim->Instance == _htim->Instance &&
+      active_channel == _htim->Channel) {
+    switch (handle->type) {
+    case MOTOR_TYPE_DRIVE: {
 
+      uint32_t captured_time = HAL_TIM_ReadCapturedValue(
+          handle->enc_capture_tim, handle->enc_captureA_channel);
+
+      handle->enc_drive.ticks_time[0] = handle->enc_drive.ticks_time[1];
+      handle->enc_drive.ticks_time[1] = captured_time;
+      break;
+    }
+
+    case MOTOR_TYPE_STEER:
+      if (handle->states & (1 << 0)) { // Si el bit de dirección esta activo,
+                                       // incrementamos los pulsos
+        handle->enc_steering.pulses++;
+      } else {
+
+        handle->enc_steering.pulses--;
+      }
+      break;
+    default:
+      return;
+      break;
+    }
   }
-  return;
 }
+
+/*  ####################################################################################*/
+/*  ####################################################################################*/
 
 void GetRPM_IT(MotorHandle_t handle) {
   if (handle == NULL || handle->type != MOTOR_TYPE_DRIVE ||
       handle->enc_capture_tim == NULL)
     return;
-  taskENTER_CRITICAL();
-  uint32_t t0 = handle->enc_drive.ticks_time[0]; //snapshot
-  uint32_t t1 = handle->enc_drive.ticks_time[1];//snapshot
-  taskEXIT_CRITICAL();
+  uint32_t t0 = handle->enc_drive.ticks_time[0];
+  uint32_t t1 = handle->enc_drive.ticks_time[1];
   uint32_t current_time = __HAL_TIM_GET_COUNTER(handle->enc_capture_tim);
   uint32_t time_since_pulse = 0;
   if (current_time >= t1) {
@@ -236,10 +281,11 @@ void GetRPM_IT(MotorHandle_t handle) {
         (handle->enc_capture_tim->Instance->ARR - t1) + current_time + 1;
   }
 
-  if (time_since_pulse >= 100000) {
+  if (time_since_pulse >= 60000) {
     handle->drive.current_speed_rpm = 0.0f;
     return;
   }
+
   uint32_t delta_ticks = 0;
 
   if (t1 >= t0) {
@@ -252,30 +298,48 @@ void GetRPM_IT(MotorHandle_t handle) {
     handle->drive.current_speed_rpm = 0.0f;
     return;
   }
-  float rps = (float)delta_ticks / 1000000.0f;
-  float rpm = (1.0f / handle->enc_ppr_per_turn) * (60.0f / rps);
+
+  float rpm =
+      60000000.0f / ((float)delta_ticks * (float)handle->enc_ppr_per_turn);
+  if (handle->drive.current_speed_rpm == 0.0f) {
+    handle->drive.current_speed_rpm = rpm;
+  } else {
+    handle->drive.current_speed_rpm =
+        (handle->drive.current_speed_rpm * 0.90f) + (rpm * 0.10f);
+  }
+
+  plot_current_rpm = handle->drive.current_speed_rpm;
   handle->drive.current_speed_rpm = rpm;
 }
 
+/* ####################################################*/
+
+/* ####################################################*/
 void GetDegrees_IT(MotorHandle_t handle) {
   if (handle == NULL || handle->type != MOTOR_TYPE_STEER ||
       handle->enc_steering.max_pulses == 0) {
     return;
   }
-  taskENTER_CRITICAL();
-  uint32_t pulsos_locales = handle->enc_steering.pulses; //snapshot
-  taskEXIT_CRITICAL();
-
-  float current_pulses = (float)pulsos_locales;
+  float current_pulses = (float)handle->enc_steering.pulses;
   float max_pulses = (float)handle->enc_steering.max_pulses;
   float max_degrees = (float)handle->enc_steering.max_degrees; //
-
   float pulses_to_degres = (current_pulses * max_degrees) / max_pulses;
   handle->steering.current_position_deg = pulses_to_degres;
 }
 
+/* ####################################################*/
+
+/* ####################################################*/
+
 static float RPM_PID(MotorHandle_t motor, float delta_time_SEC) {
   if (motor == NULL || motor->type != MOTOR_TYPE_DRIVE) {
+    return 0.0f;
+  }
+
+  if (motor->drive.target_speed_rpm == 0.0f) {
+    motor->integral_error =
+        0.0f; // Reiniciar el error integral si el objetivo es detenerse
+    motor->previous_error = 0.0f; // Reiniciar el error previo
     return 0.0f;
   }
   // 1. Calculamos el Error (Diferencia entre lo que queremos y lo que tenemos)
@@ -289,10 +353,15 @@ static float RPM_PID(MotorHandle_t motor, float delta_time_SEC) {
 
   // Anti-Windup (Evita que el error integral crezca hasta el infinito si el
   // motor se traba)
-  if (motor->integral_error > motor->max_pwm)
-    motor->integral_error = motor->max_pwm;
-  if (motor->integral_error < -motor->max_pwm)
-    motor->integral_error = -motor->max_pwm;
+  float max_i_memory = (float)motor->max_pwm * 0.4f;
+  if (motor->integral_error > max_i_memory) {
+
+    motor->integral_error = max_i_memory;
+  }
+  if (motor->integral_error < -max_i_memory) {
+
+    motor->integral_error = -max_i_memory;
+  }
 
   float i_term = motor->ki * motor->integral_error;
 
@@ -307,6 +376,10 @@ static float RPM_PID(MotorHandle_t motor, float delta_time_SEC) {
   return p_term + i_term + d_term;
 }
 
+/* ####################################################*/
+
+/* ####################################################*/
+
 static float STEER_PID(MotorHandle_t motor, float delta_time_sec) {
   if (motor == NULL || motor->type != MOTOR_TYPE_STEER)
     return 0.0f;
@@ -314,15 +387,19 @@ static float STEER_PID(MotorHandle_t motor, float delta_time_sec) {
   float error = motor->steering.target_position_deg -
                 motor->steering.current_position_deg;
 
+  if (fabsf(error) < 4.0f) {
+    motor->integral_error = 0.0f;
+    return 0.0f;
+  }
   // Proporcional
   float p_term = motor->kp * error;
 
   motor->integral_error += error * delta_time_sec;
-
-  if (motor->integral_error > motor->max_pwm)
-    motor->integral_error = motor->max_pwm;
-  if (motor->integral_error < -motor->max_pwm)
-    motor->integral_error = -motor->max_pwm;
+  float max_i_memory = (float)motor->max_pwm * 0.4f;
+  if (motor->integral_error > max_i_memory)
+    motor->integral_error = max_i_memory;
+  if (motor->integral_error < -max_i_memory)
+    motor->integral_error = -max_i_memory;
   // Integral
   float i_term = motor->ki * motor->integral_error;
 
@@ -335,71 +412,134 @@ static float STEER_PID(MotorHandle_t motor, float delta_time_sec) {
   return p_term + i_term + d_term;
 }
 
+void Motor_break(MotorHandle_t handle) {
+  if (handle == NULL)
+    return;
+  HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_RESET);
+  __HAL_TIM_SET_COMPARE(handle->pwm_tim, handle->pwm_channel, 0);
+}
+
+/* ####################################################*/
+
+/* ####################################################*/
+
 void ControllerLoop(MotorHandle_t handle, float delta_time_sec) {
   float pid_output = 0.0f;
   if (handle == NULL || !handle->is_enable)
     return;
 
-  if (handle->type == MOTOR_TYPE_DRIVE) {
-    GetRPM_IT(handle);
-    pid_output = RPM_PID(handle, delta_time_sec);
-  }
-  if (handle->type == MOTOR_TYPE_STEER) {
-    GetDegrees_IT(handle);
-    pid_output = STEER_PID(handle, delta_time_sec);
-  }
-
-  if (pid_output >= 0) {
-    handle->forward = 1;
-    HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_SET);
+  if (handle->states & (1 << 1)) { // Si el bit de parking esta activo, frenamos
+                                   // el motor y no permitimos que se mueva
+    HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_RESET);
+    __HAL_TIM_SET_COMPARE(handle->pwm_tim, handle->pwm_channel, 0);
+
   } else {
 
-    HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_SET);
+    if (handle->type == MOTOR_TYPE_DRIVE) {
+
+      float_t max_target_rpm =
+          handle->max_acceleration_rpm_per_sec * delta_time_sec;
+      float error_target =
+          handle->drive.target_speed_rpm - handle->smooth_target_speed_rpm;
+
+      if (error_target > max_target_rpm) {
+        handle->smooth_target_speed_rpm += max_target_rpm;
+      } else if (error_target < -max_target_rpm) {
+        handle->smooth_target_speed_rpm -= max_target_rpm;
+      } else {
+        handle->smooth_target_speed_rpm = handle->drive.target_speed_rpm;
+      }
+      float original_target = handle->drive.target_speed_rpm;
+      handle->drive.target_speed_rpm = handle->smooth_target_speed_rpm;
+
+      handle->kd = tune_kd_drive;
+      handle->ki = tune_ki_drive;
+      handle->kp = tune_kp_drive;
+      GetRPM_IT(handle);
+
+      plot_target_rpm = handle->drive.target_speed_rpm;
+      plot_current_rpm = handle->drive.current_speed_rpm;
+      pid_output = RPM_PID(handle, delta_time_sec);
+
+      handle->drive.target_speed_rpm = original_target;
+
+      if (pid_output < 0.0f) {
+        pid_output = 0.0f;
+      }
+    }
+    if (handle->type == MOTOR_TYPE_STEER) {
+
+      handle->kd = tune_kd_steer;
+      handle->ki = tune_ki_steer;
+      handle->kp = tune_kp_steer;
+      GetDegrees_IT(handle);
+
+      plot_target_dir = handle->steering.target_position_deg;
+      plot_current_dir = handle->steering.current_position_deg;
+      pid_output = STEER_PID(handle, delta_time_sec);
+
+      if (pid_output > 0.0f) {
+        handle->states |=
+            (1 << 0); // Establecer el bit de dirección para adelante
+      } else if (pid_output < 0.0f) {
+        handle->states &= ~(1 << 0); // Limpiar el bit de dirección para atrás
+      }
+    }
+
+    if (handle->states & (1 << 0)) {
+      HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_SET);
+      HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_RESET);
+    } else if ((handle->states & ~(1 << 0)) == 0) {
+      HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_RESET);
+      HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_SET);
+    }
+    uint32_t final_pwm = (uint32_t)fabsf(pid_output);
+    if (final_pwm > handle->max_pwm) {
+      final_pwm = handle->max_pwm;
+    } else if (final_pwm < handle->min_pwm) {
+      final_pwm = 0;
+    }
+    plot_pwm = final_pwm;
+    if (handle->states &
+        (1 << 2)) { // Si el bit de parking esta activo, frenamos el motor y no
+                    // permitimos que se mueva
+      final_pwm = 0;
+    }
+    __HAL_TIM_SET_COMPARE(handle->pwm_tim, handle->pwm_channel, final_pwm);
   }
-  uint32_t final_pwm = (uint32_t)fabs(pid_output);
-  if (final_pwm > handle->max_pwm) {
-    final_pwm = handle->max_pwm;
-  } else if (final_pwm < handle->min_pwm && final_pwm > 0) {
-    final_pwm = 0;
-  }
-  __HAL_TIM_SET_COMPARE(handle->pwm_tim, handle->pwm_channel, final_pwm);
 }
+
+/* ####################################################*/
+
+/* ####################################################*/
 bool Motor_GetState(MotorHandle_t handle) {
   if (handle->is_enable == 1) {
     return 1;
   }
   return 0;
 }
-bool SetZeroDegres(MotorHandle_t handle) {
+void SetZeroDegres(MotorHandle_t handle) {
   if (handle == NULL || handle->type != MOTOR_TYPE_STEER)
-    return 0;
-  uint16_t ls_der=HAL_GPIO_ReadPin(handle->steering.der_limit_port,handle->steering.derPin_limit);
-  if (ls_der == GPIO_PIN_RESET) {
-
+    return;
   handle->enc_steering.pulses = 0;
   handle->enc_steering.is_calibrated = 0;
-  return 1;
-  }
-  return 0;
 }
 
-bool SetMaxDegres(MotorHandle_t handle, uint32_t max_degrees) {
+void SetMaxDegres(MotorHandle_t handle, uint32_t max_degrees) {
   if (handle == NULL || max_degrees == 0 || handle->type != MOTOR_TYPE_STEER) {
-    return 0;
+    return;
   }
-
-  uint16_t ls_izq=HAL_GPIO_ReadPin(handle->steering.izq_limit_port,handle->steering.izqPin_limit);
-  if (ls_izq == GPIO_PIN_RESET) {
   handle->enc_steering.max_degrees = max_degrees;
   handle->enc_steering.max_pulses = handle->enc_steering.pulses;
   handle->enc_steering.center_pulses = handle->enc_steering.max_pulses / 2;
   handle->enc_steering.is_calibrated = 1;
-  return 1;
-  }
-  return 0;
 }
+
+/* ####################################################*/
+
+/* ####################################################*/
 float Motor_GetCurrentSpeed(MotorHandle_t handle) {
 
   if (handle == NULL || handle->type != MOTOR_TYPE_DRIVE) {
@@ -407,6 +547,12 @@ float Motor_GetCurrentSpeed(MotorHandle_t handle) {
   }
   return handle->drive.current_speed_rpm;
 }
+/**
+ * @brief
+ *
+ * @param handle
+ * @return float
+ */
 float Motor_GetCurrentPosition(MotorHandle_t handle) {
   if (handle == NULL || handle->type != MOTOR_TYPE_STEER) {
     return 0.0f;
@@ -414,23 +560,19 @@ float Motor_GetCurrentPosition(MotorHandle_t handle) {
   return handle->steering.current_position_deg;
 }
 
-void Motor_SetRawPWM(MotorHandle_t handle,bool forward, uint32_t value){
-  if (handle == NULL) return;
-
-  if (forward == true) {
-    HAL_GPIO_WritePin(handle->dir_portA,handle->dirPin_A, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(handle->dir_portB,handle->dirPin_B, GPIO_PIN_RESET);
-  
-  }else {
-  
-    HAL_GPIO_WritePin(handle->dir_portA,handle->dirPin_A, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(handle->dir_portB,handle->dirPin_B, GPIO_PIN_SET);
+void Motor_SetDriveDirection(MotorHandle_t handle, bool is_forward) {
+  // Solo permitimos cambiar la dirección manualmente al motor de tracción
+  if (handle != NULL && handle->type == MOTOR_TYPE_DRIVE) {
+    if (is_forward) {
+      handle->states |= (1 << 0);
+    } else {
+      handle->states &= ~(1 << 0);
+    }
   }
-
-  __HAL_TIM_SET_COMPARE(handle->pwm_tim, handle->pwm_channel, value);
-
 }
 
-Motor_type_t Motor_Get_Type(MotorHandle_t handle) {
-  return handle->type;
+void Motor_SetParking(MotorHandle_t handle, bool park_state) {
+  if (handle != NULL) {
+    handle->states = (handle->states & ~(1 << 1)) | (park_state << 1);
+  }
 }

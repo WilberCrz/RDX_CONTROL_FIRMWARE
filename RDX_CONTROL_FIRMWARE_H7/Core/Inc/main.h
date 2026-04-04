@@ -59,6 +59,8 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define PWM_M_3_IZQ_Pin GPIO_PIN_3
 #define PWM_M_3_IZQ_GPIO_Port GPIOA
+#define TIM1_CH1_Pin GPIO_PIN_9
+#define TIM1_CH1_GPIO_Port GPIOE
 
 /* USER CODE BEGIN Private defines */
 
