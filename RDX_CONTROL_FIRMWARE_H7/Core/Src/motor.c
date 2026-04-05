@@ -10,6 +10,7 @@
  */
 
 #include "stm32h7xx.h"
+#include "stm32h7xx_hal_gpio.h"
 
 #include "motor.h"
 #include <math.h>
@@ -57,6 +58,10 @@ struct Motor_t {
       uint16_t derPin_limit;
       float target_position_deg;
       float current_position_deg;
+      float max_degrees;
+      float center_degrees;
+      uint8_t homing_state;
+      uint32_t last_homing_pulses;
     } steering;
     /***********************motor modo drive ****************** */
     struct {
@@ -80,6 +85,7 @@ struct Motor_t {
       uint32_t max_pulses;
       uint32_t center_pulses;
       uint32_t max_degrees;
+
     } enc_steering;
 
     /***********************encoder modo drive ****************** */
@@ -139,7 +145,16 @@ MotorHandle_t Motor_Init(const MotorConfig_t *config) {
           config->der_limit;                       // pin limit_switch derecho
       motor->steering.target_position_deg = 0.0f;  // angulo objetivo en grados
       motor->steering.current_position_deg = 0.0f; // angulo actual en grados
-
+      motor->steering.center_degrees =
+          config->center_angle_deg; // angulo en grados correspondiente al centro
+      motor->steering.max_degrees =
+          config->max_angle_deg; // angulo maximo en grados desde el 0 grados
+      motor->steering.homing_state =
+          HOMING_IDLE; // estado de homing, inicia en idle no caliibrado
+      motor->steering.last_homing_pulses =
+          0; // variable para almacenar el conteo de pulsos en el último ciclo
+             // de homing, útil para detectar si el motor se atascó durante el
+             // homing
       /*----------------Encoder steering mode-----------------*/
       motor->enc_steering.pulses = 0;
       motor->enc_steering.is_calibrated = 0;
@@ -412,14 +427,6 @@ static float STEER_PID(MotorHandle_t motor, float delta_time_sec) {
   return p_term + i_term + d_term;
 }
 
-void Motor_break(MotorHandle_t handle) {
-  if (handle == NULL)
-    return;
-  HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_RESET);
-  __HAL_TIM_SET_COMPARE(handle->pwm_tim, handle->pwm_channel, 0);
-}
-
 /* ####################################################*/
 
 /* ####################################################*/
@@ -431,8 +438,8 @@ void ControllerLoop(MotorHandle_t handle, float delta_time_sec) {
 
   if (handle->states & (1 << 1)) { // Si el bit de parking esta activo, frenamos
                                    // el motor y no permitimos que se mueva
-    HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_SET);
     __HAL_TIM_SET_COMPARE(handle->pwm_tim, handle->pwm_channel, 0);
 
   } else {
@@ -454,9 +461,6 @@ void ControllerLoop(MotorHandle_t handle, float delta_time_sec) {
       float original_target = handle->drive.target_speed_rpm;
       handle->drive.target_speed_rpm = handle->smooth_target_speed_rpm;
 
-      handle->kd = tune_kd_drive;
-      handle->ki = tune_ki_drive;
-      handle->kp = tune_kp_drive;
       GetRPM_IT(handle);
 
       plot_target_rpm = handle->drive.target_speed_rpm;
@@ -470,30 +474,62 @@ void ControllerLoop(MotorHandle_t handle, float delta_time_sec) {
       }
     }
     if (handle->type == MOTOR_TYPE_STEER) {
+      if (handle->steering.homing_state == HOMING_SEEK_LEFT ||
+          handle->steering.homing_state == HOMING_SEEK_RIGHT) {
+        uint32_t delta_pulses = (uint32_t)handle->enc_steering.pulses -
+                                handle->steering.last_homing_pulses;
+        handle->steering.last_homing_pulses = handle->enc_steering.pulses;
+        float current_speed =
+            (fabsf((float)delta_pulses / (float)handle->enc_ppr_per_turn) *
+             (60.0f / delta_time_sec));
 
-      handle->kd = tune_kd_steer;
-      handle->ki = tune_ki_steer;
-      handle->kp = tune_kp_steer;
-      GetDegrees_IT(handle);
+        float target_speed = HOMING_RPM_SPEED;
+        float error = target_speed - current_speed;
 
-      plot_target_dir = handle->steering.target_position_deg;
-      plot_current_dir = handle->steering.current_position_deg;
-      pid_output = STEER_PID(handle, delta_time_sec);
+        float kp_homing = 100.0f; // Constante proporcional para homing, puedes
+                                  // ajustarla según tu sistema
+        float ki_homing = 80.0f;  // Constante integral para homing, puedes
+                                  // ajustarla según tu sistema
 
-      if (pid_output > 0.0f) {
-        handle->states |=
-            (1 << 0); // Establecer el bit de dirección para adelante
-      } else if (pid_output < 0.0f) {
-        handle->states &= ~(1 << 0); // Limpiar el bit de dirección para atrás
+        float pterm = kp_homing * error;
+        handle->integral_error += error * delta_time_sec;
+
+        float max_i = handle->max_pwm * 0.8f;
+        if (handle->integral_error > max_i)
+          handle->integral_error = max_i;
+        if (handle->integral_error < -max_i)
+          handle->integral_error = -max_i;
+
+        pid_output = 6000.0f;
+
+        // 3. Forzar el signo según la dirección que mande la máquina de estados
+        if ((handle->states & (1 << 0)) == 0) {
+          pid_output = -fabsf(pid_output); // Moviendo a la izquierda
+        } else {
+          pid_output = fabsf(pid_output); // Moviendo a la derecha
+        }
+      } else {
+        GetDegrees_IT(handle);
+
+        plot_target_dir = handle->steering.target_position_deg;
+        plot_current_dir = handle->steering.current_position_deg;
+        pid_output = STEER_PID(handle, delta_time_sec);
       }
     }
 
+    if (pid_output > 0.0f) {
+      handle->states |=
+          (1 << 0); // Establecer el bit de dirección para adelante
+    } else if (pid_output < 0.0f) {
+      handle->states &= ~(1 << 0); // Limpiar el bit de dirección para atrás
+    }
+
     if (handle->states & (1 << 0)) {
-      HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_SET);
-      HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_RESET);
-    } else if ((handle->states & ~(1 << 0)) == 0) {
       HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_RESET);
       HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_SET);
+    } else if ((handle->states & ~(1 << 0)) == 0) {
+      HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_SET);
+      HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_RESET);
     }
     uint32_t final_pwm = (uint32_t)fabsf(pid_output);
     if (final_pwm > handle->max_pwm) {
@@ -503,8 +539,8 @@ void ControllerLoop(MotorHandle_t handle, float delta_time_sec) {
     }
     plot_pwm = final_pwm;
     if (handle->states &
-        (1 << 2)) { // Si el bit de parking esta activo, frenamos el motor y no
-                    // permitimos que se mueva
+        (1 << 1)) { // Si el bit de parking esta activo, frenamos
+                    // el motor y no permitimos que se mueva
       final_pwm = 0;
     }
     __HAL_TIM_SET_COMPARE(handle->pwm_tim, handle->pwm_channel, final_pwm);
@@ -572,7 +608,96 @@ void Motor_SetDriveDirection(MotorHandle_t handle, bool is_forward) {
 }
 
 void Motor_SetParking(MotorHandle_t handle, bool park_state) {
-  if (handle != NULL) {
+  if (handle != NULL && handle->type == MOTOR_TYPE_DRIVE) {
     handle->states = (handle->states & ~(1 << 1)) | (park_state << 1);
   }
+}
+
+void Motor_Break(MotorHandle_t handle) {
+  if (handle != NULL) {
+    HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_RESET);
+    __HAL_TIM_SET_COMPARE(handle->pwm_tim, handle->pwm_channel, 0);
+    handle->states |=
+        (1 << 1); // Establecer el bit de parking para activar el freno
+  }
+}
+
+uint16_t Get_LS_IZQ(MotorHandle_t handle) {
+  if (handle == NULL || handle->type != MOTOR_TYPE_STEER) {
+    return 0;
+  }
+  return handle->steering.izqPin_limit;
+}
+uint16_t Get_LS_DER(MotorHandle_t handle) {
+  if (handle == NULL || handle->type != MOTOR_TYPE_STEER) {
+    return 0;
+  }
+
+  return handle->steering.derPin_limit;
+}
+uint8_t Motor_SteerHomingTask(MotorHandle_t handle) {
+  if (handle == NULL || handle->type != MOTOR_TYPE_STEER)
+    return HOMING_DONE;
+  if (handle->enc_steering.is_calibrated == 1)
+    return HOMING_DONE;
+
+  bool hit_left =
+      (HAL_GPIO_ReadPin(handle->steering.izq_limit_port,
+                        handle->steering.izqPin_limit) == GPIO_PIN_RESET);
+  bool hit_right =
+      (HAL_GPIO_ReadPin(handle->steering.der_limit_port,
+                        handle->steering.derPin_limit) == GPIO_PIN_RESET);
+
+  switch (handle->steering.homing_state) {
+  case HOMING_IDLE:
+    handle->integral_error = 0.0f; // Limpiar memoria del PID
+    handle->steering.homing_state = HOMING_SEEK_LEFT;
+    handle->states &= ~(1 << 0); // Establecer Dirección Izquierda (Bit 0 en 0)
+    handle->states &= ~(1 << 1); // Liberar freno
+    break;
+
+  case HOMING_SEEK_LEFT:
+    if (hit_right) {
+      Motor_Break(handle);
+      SetZeroDegres(handle);
+      handle->enc_steering.pulses = 0; // Este es nuestro Cero Absoluto
+      handle->integral_error = 0.0f;
+      handle->steering.homing_state = HOMING_SEEK_RIGHT;
+      handle->states |= (1 << 0);  // Establecer Dirección Derecha (Bit 0 en 1)
+      handle->states &= ~(1 << 1); // Liberar freno para que arranque de nuevo
+    }
+    break;
+
+  case HOMING_SEEK_RIGHT:
+    if (hit_left) {
+      Motor_Break(handle);
+      SetMaxDegres(handle, 180); // Registra el total de pulsos
+      handle->integral_error = 0.0f;
+      Motor_SetTargetPosition(
+          handle,
+          180.0f); // Mover a centro para evitar estar justo en el límite
+      handle->steering.homing_state = HOMING_CENTERING;
+      handle->states &= ~(1 << 1); // Liberar freno
+    }
+    break;
+
+  case HOMING_CENTERING:
+    // Cuando el PID normal lo haya llevado cerca de los 90°
+    if (fabsf(handle->steering.current_position_deg - 90.0f) < 2.0f) {
+      handle->steering.homing_state = HOMING_DONE;
+    }
+    break;
+
+  case HOMING_DONE:
+    return HOMING_DONE;
+  }
+  return handle->steering.homing_state;
+}
+
+uint8_t Motor_GetType(MotorHandle_t handle) {
+  if (handle == NULL) {
+    return 0xFF; // Valor inválido para indicar error
+  }
+  return (uint8_t)handle->type;
 }

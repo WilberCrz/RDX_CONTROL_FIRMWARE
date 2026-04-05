@@ -57,10 +57,26 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define LS_TRASERO_IX_0G_Pin GPIO_PIN_8
+#define LS_TRASERO_IX_0G_GPIO_Port GPIOI
+#define LS_TRASERO_IX_180G_Pin GPIO_PIN_9
+#define LS_TRASERO_IX_180G_GPIO_Port GPIOI
+#define LS_TRASERO_DX_0G_Pin GPIO_PIN_10
+#define LS_TRASERO_DX_0G_GPIO_Port GPIOI
+#define LS_TRASERO_DX_180G_Pin GPIO_PIN_11
+#define LS_TRASERO_DX_180G_GPIO_Port GPIOI
 #define PWM_M_3_IZQ_Pin GPIO_PIN_3
 #define PWM_M_3_IZQ_GPIO_Port GPIOA
 #define TIM1_CH1_Pin GPIO_PIN_9
 #define TIM1_CH1_GPIO_Port GPIOE
+#define LS_DELANTERO_IX_0G_Pin GPIO_PIN_4
+#define LS_DELANTERO_IX_0G_GPIO_Port GPIOI
+#define LS_DELANTERO_IX_180G_Pin GPIO_PIN_5
+#define LS_DELANTERO_IX_180G_GPIO_Port GPIOI
+#define LS_DELANTERO_DX_0G_Pin GPIO_PIN_6
+#define LS_DELANTERO_DX_0G_GPIO_Port GPIOI
+#define LS_DELANTERO_DX_180G_Pin GPIO_PIN_7
+#define LS_DELANTERO_DX_180G_GPIO_Port GPIOI
 
 /* USER CODE BEGIN Private defines */
 

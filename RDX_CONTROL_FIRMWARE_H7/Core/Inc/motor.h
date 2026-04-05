@@ -71,6 +71,14 @@
 #define ENC_A_DELANTERO_IZQ TIM_CHANNEL_3
 #define ENC_A_DELANTERO_DER TIM_CHANNEL_4
 
+#define HOMING_IDLE 0
+#define HOMING_SEEK_LEFT 1
+#define HOMING_SEEK_RIGHT 2
+#define HOMING_CENTERING 3
+#define HOMING_DONE 4
+#define HOMING_RPM_SPEED 100.0f
+
+
 #include "stm32h7xx.h"
 #include <math.h>
 #include <stdbool.h>
@@ -105,7 +113,8 @@ typedef struct {
   uint32_t boost_pwm;
   uint32_t max_pwm;
   uint32_t min_pwm;
-
+  uint32_t max_angle_deg;
+  uint32_t center_angle_deg;
   float kp;
   float ki;
   float kd;
@@ -168,6 +177,7 @@ void Motor_SetTargetPosition(MotorHandle_t handle, float_t angle_degrees);
 bool Motor_GetState(MotorHandle_t handle);
 float Motor_GetCurrentSpeed(MotorHandle_t handle);
 float Motor_GetCurrentPosition(MotorHandle_t handle);
+uint8_t Motor_GetType(MotorHandle_t handle);
 
 /**
  * @brief Setea el 0 grados para motores modo steer
@@ -208,4 +218,12 @@ void Motor_SetDriveDirection(MotorHandle_t handle, bool is_forward);
  */
 
 void Motor_SetParking(MotorHandle_t handle, bool park_state);
+
+ 
+uint8_t Motor_SteerHomingTask(MotorHandle_t handle);
+
+void Motor_Break(MotorHandle_t handle);
+
+uint16_t Get_LS_IZQ(MotorHandle_t handle);
+uint16_t Get_LS_DER(MotorHandle_t handle);
 #endif

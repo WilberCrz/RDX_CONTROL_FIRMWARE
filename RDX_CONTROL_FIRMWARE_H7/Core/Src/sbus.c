@@ -18,9 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-int16_t map(int16_t x, int16_t in_min, int16_t in_max, int16_t out_min,
-            int16_t out_max);
-
+int32_t map(int32_t x, int32_t in_min, int32_t in_max, int32_t out_min, int32_t out_max);
 struct sbus_t {
 
   UART_HandleTypeDef *uartHandle;
@@ -43,7 +41,7 @@ sbus_Handle init_sbus(UART_HandleTypeDef *UART_Handle) {
     return NULL;
   }
 
-  sbus_Handle sbus = (sbus_Handle) malloc(sizeof(struct sbus_t));
+  sbus_Handle sbus = (sbus_Handle)malloc(sizeof(struct sbus_t));
   if (sbus != NULL) {
 
     sbus->Acel = 0;
@@ -83,10 +81,10 @@ uint8_t getFrameLost(sbus_Handle Handle) {
 
 uint8_t *getBuffer(sbus_Handle Handle) { return &Handle->rx_buffer; };
 
-uint16_t getAcc(sbus_Handle Handle) {
+uint32_t getAcc(sbus_Handle Handle) {
   if (Handle == NULL)
     return 0;
-  uint16_t rpm = map(Handle->Acel, 1788, 200, 0, 290);
+  int32_t rpm = map(Handle->Acel, 1788, 200, 0, 290);
 
   if (rpm < 10) {
     rpm = 0;
@@ -94,15 +92,22 @@ uint16_t getAcc(sbus_Handle Handle) {
   if (rpm > 285) {
     rpm = 290;
   }
-  return rpm;
+  return (uint32_t)rpm;
 };
 
 // Función clásica para escalar valores
-int16_t map(int16_t x, int16_t in_min, int16_t in_max, int16_t out_min,
-            int16_t out_max) {
-  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
-}
+int32_t map(int32_t x, int32_t in_min, int32_t in_max, int32_t out_min, int32_t out_max) {
+  
+  // 1. Prevenir divisiones por cero si los mínimos y máximos son iguales por error
+  if (in_max == in_min) {
+      return out_min;
+  }
 
+  // 2. Cálculo con paréntesis correctos (+ out_min va por FUERA de la división)
+  int32_t mapped_value = ((x - in_min) * (out_max - out_min) / (in_max - in_min)) + out_min;
+  
+  return mapped_value;
+}
 uint8_t getDir(sbus_Handle Handle) {
   if (Handle == NULL)
     return 0;
@@ -112,24 +117,24 @@ uint8_t getDir(sbus_Handle Handle) {
   return 0;
 };
 
-uint16_t getGiro(sbus_Handle Handle) {
+uint32_t getGiro(sbus_Handle Handle) {
   if (Handle == NULL)
     return 0;
 
-  static uint16_t last_pos = 0;
-  uint16_t giro = map(Handle->Giro, 200, 1800, 0, 270);
+  static uint32_t last_pos = 0;
+  uint32_t giro = map(Handle->Giro, 200, 1800, 0, 270);
 
-  if ((giro - last_pos)>3) {
+  if ((giro - last_pos) > 3) {
     last_pos = giro;
   } else {
-    giro=last_pos;
+    giro = last_pos;
   }
 
   if (giro < 0) {
     giro = 0;
   }
-  if (giro > 270) {
-    giro = 270;
+  if (giro > 180) {
+    giro = 180;
   }
   return giro;
 }
@@ -139,7 +144,6 @@ uint8_t sbus_GetState(sbus_Handle Handle) {
     return 0;
   return Handle->states;
 };
-
 
 uint16_t getChannel(sbus_Handle Handle, uint8_t num_Channel) {
   if (Handle == NULL)
@@ -196,6 +200,8 @@ void sbusParse(sbus_Handle Handle) {
 
     Handle->Acel = Handle->canales[2];
     Handle->Giro = Handle->canales[0];
+    Handle->last_packet_tick =
+        HAL_GetTick(); // Actualizar el tick del último paquete válido
 
     if (Handle->canales[9] < 1000) {
       Handle->states |= (1 << 0); // Establecer bit 0 para dirección adelante
@@ -225,15 +231,12 @@ void sbus_commit_data(sbus_Handle Handle) {
     currentbytepos++;
   }
 
-  if (currentbytepos >=25) {
+  if (currentbytepos >= 25) {
 
     sbusParse(Handle);
-    currentbytepos=0;
-  
+    currentbytepos = 0;
   }
 
   if (Handle == NULL)
     return;
-  Handle->last_packet_tick =
-      HAL_GetTick(); // Actualizar el tick del último paquete válido
 }

@@ -19,12 +19,11 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "adc.h"
-#include "gpio.h"
 #include "i2c.h"
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
-
+#include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -36,7 +35,6 @@
 #include "toRaspy.h"
 #include <stdint.h>
 #include <sys/cdefs.h>
-
 
 /* USER CODE END Includes */
 
@@ -66,20 +64,21 @@ typedef struct {
 /* USER CODE BEGIN PV */
 MotorHandle_t motores[10];
 sbus_Handle sbus = NULL;
-uint8_t motor_array_size = 1;
+uint8_t motor_array_size = 0;
 ADC_module_handle JOY;
 ADC_module_handle BATTERY;
 uart_handle_t toraspy_uart_handle;
 datos rover_data;
 uint8_t buffer_toRaspy[100];
 uint32_t current_tick = 0;
-volatile uint16_t throttle = 0;
-volatile uint16_t dir = 0;
+volatile uint32_t throttle = 0;
+volatile uint32_t dir = 0;
 volatile uint8_t task_heartbeat = 0;
-volatile uint16_t giro = 0;
+volatile uint32_t giro = 0;
 volatile uint8_t motor_states = 0;
 uint8_t payload[sizeof(datos)];
-
+volatile uint32_t last_exti_time = 0;
+volatile uint8_t system_calibrated = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -91,6 +90,7 @@ void taskrfsbus(void *pvparameter);
 void taskToRaspy(void *pvparameter);
 void taskMotorControl(void *pvparameter);
 void taskADC(void *pvparameter);
+void taskHoming(void *pvparameter);
 
 /* USER CODE END PFP */
 
@@ -100,10 +100,11 @@ void taskADC(void *pvparameter);
 /* USER CODE END 0 */
 
 /**
- * @brief  The application entry point.
- * @retval int
- */
-int main(void) {
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
 
   /* USER CODE BEGIN 1 */
 
@@ -114,8 +115,7 @@ int main(void) {
 
   /* MCU Configuration--------------------------------------------------------*/
 
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick.
-   */
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
 
   /* USER CODE BEGIN Init */
@@ -150,7 +150,7 @@ int main(void) {
   MX_USART3_UART_Init();
   MX_UART4_Init();
   /* USER CODE BEGIN 2 */
-  MotorConfig_t cfg_motores[10] = {
+  MotorConfig_t cfg_motores[2] = {
       [0] =
           {
               // m1 izq
@@ -165,37 +165,41 @@ int main(void) {
               .enc_captureA_channel = A_MOTOR3_DER,
               .gear_ratio = 27,
               .enc_ppr = 16,
-              .kp = 200,
-              .ki = 0,
+              .kp = 80,
+              .ki = 40,
               .kd = 0,
               .boost_pwm = 15999,
               .max_pwm = 6999,
               .min_pwm = 0,
               .states = 0,
           },
-      // [1] =
-      //     {
-      //         // m2 izq
-
-      //         .type = MOTOR_TYPE_DRIVE,
-      //         .pwm_tim = &MOTOR2_TIM_PWM,
-      //         .pwm_channel = MOTOR2_IZQ_PWM,
-      //         .dir_portA = DIR_GPIO,
-      //         .dir_portB = DIR_GPIO,
-      //         .dir_A = DIR_IZQ_DRIVE_PIN_INA,
-      //         .dir_B = DIR_IZQ_DRIVE_PIN_INB,
-      //         .enc_capture_tim = &ENCODERS_DRIVE_MOTOR2_TIM,
-      //         .enc_captureA_channel = A_MOTOR2_IZQ,
-      //         .gear_ratio = 27,
-      //         .enc_ppr = 16,
-      //         .kp = 200,
-      //         .ki = 0,
-      //         .kd = 0,
-      //         .boost_pwm = 15999,
-      //         .max_pwm = 6999,
-      //         .min_pwm = 0,
-      //         .states = 0,
-      //     },
+      [1] =
+          {
+              // m2 izq
+              .type = MOTOR_TYPE_STEER,
+              .pwm_tim = &MOTOR_DIR_TIM_PWM,
+              .pwm_channel = MOTOR_TRASERO_DER_PWM,
+              .dir_portA = DIR_GPIO,
+              .dir_portB = DIR_GPIO,
+              .dir_A = DIR_A_TRASERO_DER_PIN,
+              .dir_B = DIR_B_TRASERO_DER_PIN,
+              .enc_capture_tim = &ENCODERS_STEER_TIM,
+              .enc_captureA_channel = ENC_A_TRASERO_DER,
+              .izq_limit_port = GPIOI,
+              .der_limit_port = GPIOI,
+              .izq_limit = GPIO_PIN_10,
+              .der_limit = GPIO_PIN_11,
+              
+              .gear_ratio = 27,
+              .enc_ppr = 16,
+              .kp = 200,
+              .ki = 20,
+              .kd = 1,
+              .boost_pwm = 6999,
+              .max_pwm = 6999,
+              .min_pwm = 0,
+              .states = 0,
+          },
       // [2] =
       //     {
       //         // m3 izq
@@ -223,7 +227,6 @@ int main(void) {
       // [3] =
       //     {
       //         // m1 der
-
       //         .type = MOTOR_TYPE_DRIVE,
       //         .pwm_tim = &MOTOR2_TIM_PWM,
       //         .pwm_channel = MOTOR2_DER_PWM,
@@ -381,11 +384,11 @@ int main(void) {
       //         .states = 0,
       //     },
   };
-
+  motor_array_size = sizeof(cfg_motores) / sizeof(MotorConfig_t);
   rover_data.d_gyro = 0.0f;
   rover_data.d_temp = 0.0f;
   rover_data.d_vbat = (12 << 16) | 12;
-  for (uint8_t i = 0; i < 10; i++) {
+  for (uint8_t i = 0; i < motor_array_size; i++) {
     rover_data.axis_RPM[i] = 100;
   }
   rover_data.current_angle = (30 << 16) | 30;
@@ -404,13 +407,16 @@ int main(void) {
     motores[i] = Motor_Init(&cfg_motores[i]);
   }
 
-  Task_t tasks_array[4] = {
+  Task_t tasks_array[5] = {
       [0] = {.taskFunction = taskMotorControl,
              .interval = 5,
              .lastExecution = 0},
-      [1] = {.taskFunction = taskrfsbus, .interval = 20, .lastExecution = 0},
-      [2] = {.taskFunction = taskADC, .interval = 25, .lastExecution = 0},
-      [3] = {.taskFunction = taskToRaspy, .interval = 100, .lastExecution = 0},
+      [1] = {.taskFunction = taskHoming,
+             .interval = 10,
+             .lastExecution = 0}, // Nueva Tarea (100 Hz)
+      [2] = {.taskFunction = taskrfsbus, .interval = 20, .lastExecution = 0},
+      [3] = {.taskFunction = taskADC, .interval = 25, .lastExecution = 0},
+      [4] = {.taskFunction = taskToRaspy, .interval = 100, .lastExecution = 0},
   };
   uint32_t NUM_TASKS = sizeof(tasks_array) / sizeof(Task_t);
   // ADC_Start(&JOY, &hadc1);
@@ -437,27 +443,27 @@ int main(void) {
 }
 
 /**
- * @brief System Clock Configuration
- * @retval None
- */
-void SystemClock_Config(void) {
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
   /** Supply configuration update enable
-   */
+  */
   HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY);
 
   /** Configure the main internal regulator output voltage
-   */
+  */
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE0);
 
-  while (!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {
-  }
+  while(!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}
 
   /** Initializes the RCC Oscillators according to the specified parameters
-   * in the RCC_OscInitTypeDef structure.
-   */
+  * in the RCC_OscInitTypeDef structure.
+  */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
@@ -470,15 +476,16 @@ void SystemClock_Config(void) {
   RCC_OscInitStruct.PLL.PLLRGE = RCC_PLL1VCIRANGE_2;
   RCC_OscInitStruct.PLL.PLLVCOSEL = RCC_PLL1VCOWIDE;
   RCC_OscInitStruct.PLL.PLLFRACN = 0;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
     Error_Handler();
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-   */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
-                                RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2 |
-                                RCC_CLOCKTYPE_D3PCLK1 | RCC_CLOCKTYPE_D1PCLK1;
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2
+                              |RCC_CLOCKTYPE_D3PCLK1|RCC_CLOCKTYPE_D1PCLK1;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.SYSCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_HCLK_DIV2;
@@ -487,20 +494,22 @@ void SystemClock_Config(void) {
   RCC_ClkInitStruct.APB2CLKDivider = RCC_APB2_DIV2;
   RCC_ClkInitStruct.APB4CLKDivider = RCC_APB4_DIV2;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK) {
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)
+  {
     Error_Handler();
   }
 }
 
 /**
- * @brief Peripherals Common Clock Configuration
- * @retval None
- */
-void PeriphCommonClock_Config(void) {
+  * @brief Peripherals Common Clock Configuration
+  * @retval None
+  */
+void PeriphCommonClock_Config(void)
+{
   RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
 
   /** Initializes the peripherals clock
-   */
+  */
   PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_ADC;
   PeriphClkInitStruct.PLL2.PLL2M = 2;
   PeriphClkInitStruct.PLL2.PLL2N = 12;
@@ -511,7 +520,8 @@ void PeriphCommonClock_Config(void) {
   PeriphClkInitStruct.PLL2.PLL2VCOSEL = RCC_PLL2VCOMEDIUM;
   PeriphClkInitStruct.PLL2.PLL2FRACN = 0;
   PeriphClkInitStruct.AdcClockSelection = RCC_ADCCLKSOURCE_PLL2;
-  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK) {
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
+  {
     Error_Handler();
   }
 }
@@ -522,8 +532,7 @@ void taskrfsbus(void *pvparameter) {
   if (getFailsafe(sbus)) {
     throttle = 0;
     dir = 0;
-    giro = 90;
-    motor_states |= (1 << 1); // Establecer el bit de break
+    giro = 60;
 
   } else {
     if ((sbus_GetState(sbus) & (1 << 1)) == 0) {
@@ -538,17 +547,22 @@ void taskrfsbus(void *pvparameter) {
       }
     } else {
       throttle = 0;
-      giro = 90;
+      giro = 60;
       dir = getDir(sbus);
       motor_states |= (1 << 1); // Establecer el bit de parking
     }
   }
-
-  for (uint8_t i = 0; i < 10; i++) {
-    Motor_SetTargetPosition(motores[i], (float)giro);
-    Motor_SetTargetSpeed(motores[i], (float)throttle);
-    Motor_SetDriveDirection(motores[i], (motor_states & (1 << 0))!=0 );
-    Motor_SetParking(motores[i], (motor_states & (1 << 1))!=0);
+  if (system_calibrated == 1) {
+    for (uint8_t i = 0; i < 10; i++) {
+      Motor_SetTargetPosition(motores[i], (float)giro);
+      Motor_SetTargetSpeed(motores[i], (float)throttle);
+      Motor_SetDriveDirection(motores[i], (motor_states & (1 << 0)) != 0);
+      Motor_SetParking(motores[i], (motor_states & (1 << 1)) != 0);
+    }
+  } else {
+    for (uint8_t i = 0; i < motor_array_size; i++) {
+      Motor_SetParking(motores[i], 1);
+    }
   }
 }
 void taskToRaspy(void *pvparameter) {
@@ -576,6 +590,25 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
   }
 }
 
+void taskHoming(void *pvparameter) {
+  if (system_calibrated == 1) {
+    return;
+  }
+
+  uint8_t all_homed = 1;
+
+  for (uint8_t i = 0; i < motor_array_size; i++) {
+    int homing_status = Motor_SteerHomingTask(motores[i]);
+    if (homing_status != HOMING_DONE) {
+      all_homed = 0;
+    }
+  }
+
+  if (all_homed) {
+    system_calibrated = 1;
+  }
+}
+
 // callback para sbustouart dma
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
   if (sbusGetUartHandle(sbus) == huart->Instance) {
@@ -590,7 +623,6 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
   if (sbusGetUartHandle(sbus) == huart->Instance) {
-    volatile uint32_t error_code = huart->ErrorCode;
     __HAL_UART_CLEAR_OREFLAG(huart);
     __HAL_UART_CLEAR_NEFLAG(huart);
     __HAL_UART_CLEAR_FEFLAG(huart);
@@ -618,26 +650,31 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
 //   }
 // }
 
+
+  // Recorremos los motores de dirección (índices 6 al 9 en tu array)
 /* USER CODE END 4 */
 
-/* MPU Configuration */
+ /* MPU Configuration */
 
-void MPU_Config(void) {
+void MPU_Config(void)
+{
 
   /* Disables the MPU */
   HAL_MPU_Disable();
 
   /* Enables the MPU */
   HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
+
 }
 
 /**
- * @brief  This function is executed in case of error occurrence.
- * @retval None
- */
-void Error_Handler(void) {
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
+
   __disable_irq();
   while (1) {
   }
@@ -645,13 +682,14 @@ void Error_Handler(void) {
 }
 #ifdef USE_FULL_ASSERT
 /**
- * @brief  Reports the name of the source file and the source line number
- *         where the assert_param error has occurred.
- * @param  file: pointer to the source file name
- * @param  line: assert_param error line source number
- * @retval None
- */
-void assert_failed(uint8_t *file, uint32_t line) {
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
   /* USER CODE BEGIN 6 */
   /* User can add his own implementation to report the file name and line
      number, ex: printf("Wrong parameters value: file %s on line %d\r\n", file,
