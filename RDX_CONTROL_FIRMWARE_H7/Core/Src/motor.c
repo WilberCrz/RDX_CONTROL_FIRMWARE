@@ -10,20 +10,22 @@
  */
 
 #include "stm32h7xx.h"
+#include "stm32h7xx_hal.h"
 #include "stm32h7xx_hal_gpio.h"
 
 #include "motor.h"
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <sys/_intsup.h>
+
 
 // Variables para leer en la gráfica
 volatile float plot_target_rpm = 0.0f;
 volatile float plot_current_rpm = 0.0f;
-volatile float plot_pwm = 0.0f;
 volatile float rpm_target = 0.0f;
-
-volatile float plot_pwm_dir = 0.0f;
+volatile uint32_t counter_tick = 0;
+volatile uint8_t estado_de_maquina = BUSCAR;
 volatile float plot_target_dir = 0.0f;
 volatile float plot_current_dir = 0.0f;
 
@@ -47,6 +49,7 @@ struct Motor_t {
   float max_acceleration_rpm_per_sec;
   uint8_t states;
   bool is_enable;
+  uint8_t dir_flag;
 
   union {
     /****************motor modo steering ****************** */
@@ -58,10 +61,7 @@ struct Motor_t {
       uint16_t derPin_limit;
       float target_position_deg;
       float current_position_deg;
-      float max_degrees;
       float center_degrees;
-      uint8_t homing_state;
-      uint32_t last_homing_pulses;
     } steering;
     /***********************motor modo drive ****************** */
     struct {
@@ -82,10 +82,9 @@ struct Motor_t {
       uint32_t pulses; // pulsos_1 = sum_pulsos_actual, pulsos_0 =
                        // sum_pulsos_anterior.
       uint8_t is_calibrated;
-      uint32_t max_pulses;
       uint32_t center_pulses;
       uint32_t max_degrees;
-
+      uint32_t max_pulses;
     } enc_steering;
 
     /***********************encoder modo drive ****************** */
@@ -146,15 +145,10 @@ MotorHandle_t Motor_Init(const MotorConfig_t *config) {
       motor->steering.target_position_deg = 0.0f;  // angulo objetivo en grados
       motor->steering.current_position_deg = 0.0f; // angulo actual en grados
       motor->steering.center_degrees =
-          config->center_angle_deg; // angulo en grados correspondiente al centro
-      motor->steering.max_degrees =
+          config
+              ->center_angle_deg; // angulo en grados correspondiente al centro
+      motor->enc_steering.max_degrees =
           config->max_angle_deg; // angulo maximo en grados desde el 0 grados
-      motor->steering.homing_state =
-          HOMING_IDLE; // estado de homing, inicia en idle no caliibrado
-      motor->steering.last_homing_pulses =
-          0; // variable para almacenar el conteo de pulsos en el último ciclo
-             // de homing, útil para detectar si el motor se atascó durante el
-             // homing
       /*----------------Encoder steering mode-----------------*/
       motor->enc_steering.pulses = 0;
       motor->enc_steering.is_calibrated = 0;
@@ -166,7 +160,7 @@ MotorHandle_t Motor_Init(const MotorConfig_t *config) {
       motor->drive.current_speed_rpm = 0.0f;
       motor->drive.target_speed_rpm = 0.0f;
       motor->smooth_target_speed_rpm = 0.0f;
-      motor->max_acceleration_rpm_per_sec = 1000.0f;
+      motor->max_acceleration_rpm_per_sec = 250.0f;
 
       /*----------------Encoder drive mode-----------------*/
       motor->enc_drive.ticks_time[0] = 0;
@@ -180,17 +174,9 @@ MotorHandle_t Motor_Init(const MotorConfig_t *config) {
     motor->previous_error = 0.0f; // error previo
     motor->integral_error = 0.0f; // error acumulado
 
-    HAL_TIM_PWM_Start(motor->pwm_tim, motor->pwm_channel);
-    __HAL_TIM_SET_COMPARE(motor->pwm_tim, motor->pwm_channel,
-                          0); // Iniciamos con un valor de PWM bajo para evitar
-                              // movimientos bruscos al iniciar
-
-    if (motor->enc_capture_tim != NULL) {
-      HAL_TIM_IC_Start_IT(motor->enc_capture_tim, motor->enc_captureA_channel);
-    }
-
     motor->is_enable = 1;
   }
+
   return motor;
 }
 
@@ -201,8 +187,8 @@ void Motor_Destroy(MotorHandle_t handle) {
   __HAL_TIM_SET_COMPARE(handle->pwm_tim, handle->pwm_channel, 0);
   HAL_TIM_PWM_Stop(handle->pwm_tim, handle->pwm_channel);
 
-  HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_SET);
   handle->is_enable = 0;
   free(handle);
 }
@@ -214,48 +200,54 @@ void Motor_SetTargetSpeed(MotorHandle_t handle, float speed_rpm) {
   }
 }
 
-void Motor_SetTargetPosition(MotorHandle_t handle, float angle_degrees) {
+void Motor_SetTargetPosition(MotorHandle_t handle, float rc_angle_deg) {
+    // Si tu control RC envía directamente de 0 a 270, lo mapeamos 1:1
+    float physical_target = rc_angle_deg;
 
-  if (handle != NULL && handle->type == MOTOR_TYPE_STEER &&
-      handle->enc_steering.is_calibrated == 1) {
-    if (angle_degrees < 0.0f) {
-      angle_degrees = 0.0f;
-    } else if (angle_degrees > (float)handle->enc_steering.max_degrees) {
-      angle_degrees = (float)handle->enc_steering.max_degrees;
+    // Limitador de seguridad estricto para no chocar la estructura
+    if (physical_target < ((float)handle->enc_steering.max_degrees * 0.1f)) {
+      physical_target = ((float)handle->enc_steering.max_degrees * 0.1f);
+    } else if (physical_target >
+               (float)handle->enc_steering.max_degrees -
+                   ((float)handle->enc_steering.max_degrees * 0.1f)) {
+      physical_target = (float)handle->enc_steering.max_degrees -
+                        ((float)handle->enc_steering.max_degrees * 0.1f);
     }
 
-    handle->steering.target_position_deg = angle_degrees;
-  }
+    handle->steering.target_position_deg = physical_target;
 }
 
 void Motor_UpdateEncoder(MotorHandle_t handle, TIM_HandleTypeDef *_htim) {
   if (handle == NULL) {
     return;
   }
-  HAL_TIM_ActiveChannel active_channel = HAL_TIM_ACTIVE_CHANNEL_CLEARED;
-  switch (handle->enc_captureA_channel) {
-  case TIM_CHANNEL_1:
-    active_channel = HAL_TIM_ACTIVE_CHANNEL_1;
-    break;
-  case TIM_CHANNEL_2:
-    active_channel = HAL_TIM_ACTIVE_CHANNEL_2;
-    break;
-  case TIM_CHANNEL_3:
-    active_channel = HAL_TIM_ACTIVE_CHANNEL_3;
-    break;
-  case TIM_CHANNEL_4:
-    active_channel = HAL_TIM_ACTIVE_CHANNEL_4;
-    break;
-  default:
-    break;
-  };
   if (handle->enc_capture_tim->Instance == _htim->Instance &&
-      active_channel == _htim->Channel) {
+      handle->enc_captureA_channel == _htim->Channel) {
     switch (handle->type) {
     case MOTOR_TYPE_DRIVE: {
+      uint32_t tim_channel = 0;
 
-      uint32_t captured_time = HAL_TIM_ReadCapturedValue(
-          handle->enc_capture_tim, handle->enc_captureA_channel);
+      // Traducimos el ACTIVE_CHANNEL al TIM_CHANNEL correcto para poder leer el
+      // registro
+      switch (handle->enc_captureA_channel) {
+      case HAL_TIM_ACTIVE_CHANNEL_1:
+        tim_channel = TIM_CHANNEL_1;
+        break;
+      case HAL_TIM_ACTIVE_CHANNEL_2:
+        tim_channel = TIM_CHANNEL_2;
+        break;
+      case HAL_TIM_ACTIVE_CHANNEL_3:
+        tim_channel = TIM_CHANNEL_3;
+        break;
+      case HAL_TIM_ACTIVE_CHANNEL_4:
+        tim_channel = TIM_CHANNEL_4;
+        break;
+      default:
+        return; // Error de canal
+      }
+
+      uint32_t captured_time =
+          HAL_TIM_ReadCapturedValue(handle->enc_capture_tim, tim_channel);
 
       handle->enc_drive.ticks_time[0] = handle->enc_drive.ticks_time[1];
       handle->enc_drive.ticks_time[1] = captured_time;
@@ -270,6 +262,7 @@ void Motor_UpdateEncoder(MotorHandle_t handle, TIM_HandleTypeDef *_htim) {
 
         handle->enc_steering.pulses--;
       }
+      counter_tick = handle->enc_steering.pulses;
       break;
     default:
       return;
@@ -337,9 +330,14 @@ void GetDegrees_IT(MotorHandle_t handle) {
   }
   float current_pulses = (float)handle->enc_steering.pulses;
   float max_pulses = (float)handle->enc_steering.max_pulses;
-  float max_degrees = (float)handle->enc_steering.max_degrees; //
-  float pulses_to_degres = (current_pulses * max_degrees) / max_pulses;
-  handle->steering.current_position_deg = pulses_to_degres;
+  float position_deg = 0.0f;
+  if (current_pulses <= 0.0f) {
+    position_deg = 0.0f;
+  } else {
+    position_deg =
+        (current_pulses * handle->enc_steering.max_degrees) / max_pulses;
+  }
+  handle->steering.current_position_deg = position_deg;
 }
 
 /* ####################################################*/
@@ -357,7 +355,8 @@ static float RPM_PID(MotorHandle_t motor, float delta_time_SEC) {
     motor->previous_error = 0.0f; // Reiniciar el error previo
     return 0.0f;
   }
-  // 1. Calculamos el Error (Diferencia entre lo que queremos y lo que tenemos)
+  // 1. Calculamos el Error (Diferencia entre lo que queremos y lo que
+  // tenemos)
   float error = motor->drive.target_speed_rpm - motor->drive.current_speed_rpm;
 
   // 2. Proporcional (P)
@@ -402,7 +401,7 @@ static float STEER_PID(MotorHandle_t motor, float delta_time_sec) {
   float error = motor->steering.target_position_deg -
                 motor->steering.current_position_deg;
 
-  if (fabsf(error) < 4.0f) {
+  if (fabsf(error) < 0.5f) {
     motor->integral_error = 0.0f;
     return 0.0f;
   }
@@ -437,10 +436,8 @@ void ControllerLoop(MotorHandle_t handle, float delta_time_sec) {
     return;
 
   if (handle->states & (1 << 1)) { // Si el bit de parking esta activo, frenamos
-                                   // el motor y no permitimos que se mueva
-    HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_SET);
-    __HAL_TIM_SET_COMPARE(handle->pwm_tim, handle->pwm_channel, 0);
+    // el motor y no permitimos que se mueva
+    Motor_Break(handle);
 
   } else {
 
@@ -472,78 +469,71 @@ void ControllerLoop(MotorHandle_t handle, float delta_time_sec) {
       if (pid_output < 0.0f) {
         pid_output = 0.0f;
       }
-    }
-    if (handle->type == MOTOR_TYPE_STEER) {
-      if (handle->steering.homing_state == HOMING_SEEK_LEFT ||
-          handle->steering.homing_state == HOMING_SEEK_RIGHT) {
-        uint32_t delta_pulses = (uint32_t)handle->enc_steering.pulses -
-                                handle->steering.last_homing_pulses;
-        handle->steering.last_homing_pulses = handle->enc_steering.pulses;
-        float current_speed =
-            (fabsf((float)delta_pulses / (float)handle->enc_ppr_per_turn) *
-             (60.0f / delta_time_sec));
 
-        float target_speed = HOMING_RPM_SPEED;
-        float error = target_speed - current_speed;
-
-        float kp_homing = 100.0f; // Constante proporcional para homing, puedes
-                                  // ajustarla según tu sistema
-        float ki_homing = 80.0f;  // Constante integral para homing, puedes
-                                  // ajustarla según tu sistema
-
-        float pterm = kp_homing * error;
-        handle->integral_error += error * delta_time_sec;
-
-        float max_i = handle->max_pwm * 0.8f;
-        if (handle->integral_error > max_i)
-          handle->integral_error = max_i;
-        if (handle->integral_error < -max_i)
-          handle->integral_error = -max_i;
-
-        pid_output = 6000.0f;
-
-        // 3. Forzar el signo según la dirección que mande la máquina de estados
-        if ((handle->states & (1 << 0)) == 0) {
-          pid_output = -fabsf(pid_output); // Moviendo a la izquierda
-        } else {
-          pid_output = fabsf(pid_output); // Moviendo a la derecha
-        }
+      if (handle->states & (1 << 0)) {
+        HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_SET);
       } else {
-        GetDegrees_IT(handle);
-
-        plot_target_dir = handle->steering.target_position_deg;
-        plot_current_dir = handle->steering.current_position_deg;
-        pid_output = STEER_PID(handle, delta_time_sec);
+        HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_RESET);
       }
+      uint32_t final_pwm = (uint32_t)fabsf(pid_output);
+      uint32_t max =
+          (handle->states & (1 << 3)) ? handle->boost_pwm : handle->max_pwm;
+      if (final_pwm > max) {
+        final_pwm = max;
+      } else if (final_pwm < handle->min_pwm) {
+        final_pwm = 0;
+      }
+      if (handle->states &
+          (1 << 1)) { // Si el bit de parking esta activo, frenamos
+                      // el motor y no permitimos que se mueva
+        final_pwm = 0;
+      }
+      __HAL_TIM_SET_COMPARE(handle->pwm_tim, handle->pwm_channel, final_pwm);
     }
+    if (handle->type == MOTOR_TYPE_STEER) { // TIPO STEER
+      GetDegrees_IT(handle);
+      plot_target_dir = handle->steering.target_position_deg; // Lo que quieres
+      plot_current_dir = handle->steering.current_position_deg; // Lo que tienes
 
-    if (pid_output > 0.0f) {
-      handle->states |=
-          (1 << 0); // Establecer el bit de dirección para adelante
-    } else if (pid_output < 0.0f) {
-      handle->states &= ~(1 << 0); // Limpiar el bit de dirección para atrás
-    }
+      pid_output = STEER_PID(handle, delta_time_sec);
+      if ((handle->steering.current_position_deg <= (24.0f / 2.0f)) &&
+          pid_output < 0.0f) {
+        pid_output = 0.0f;
+      }
+      if (handle->steering.current_position_deg >=
+          (handle->enc_steering.max_degrees - (24.0f / 2.0f))) {
+        pid_output = 0.0f;
+      }
 
-    if (handle->states & (1 << 0)) {
-      HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_SET);
-    } else if ((handle->states & ~(1 << 0)) == 0) {
-      HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_SET);
-      HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_RESET);
+      handle->kp = tune_kp_steer;
+      handle->ki = tune_ki_steer;
+      handle->kd = tune_kd_steer;
+      counter_tick = handle->enc_steering.max_pulses;
+      // NO limites el pid_output a 0 aquí. El signo define la dirección.
+      if (pid_output > 0.0f) {
+        handle->states |= (1 << 0);
+      } else {
+        handle->states &= ~(1 << 0);
+      }
+
+      if (handle->states & (1 << 0)) {
+        HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_SET);
+      } else {
+        HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_RESET);
+      }
+      // Aplicar PWM (siempre positivo para el timer)
+      uint32_t final_pwm = (uint32_t)fabsf(pid_output);
+      if (final_pwm > handle->max_pwm)
+        final_pwm = handle->max_pwm;
+      if (final_pwm < handle->min_pwm)
+        final_pwm = 0;
+
+      __HAL_TIM_SET_COMPARE(handle->pwm_tim, handle->pwm_channel, final_pwm);
     }
-    uint32_t final_pwm = (uint32_t)fabsf(pid_output);
-    if (final_pwm > handle->max_pwm) {
-      final_pwm = handle->max_pwm;
-    } else if (final_pwm < handle->min_pwm) {
-      final_pwm = 0;
-    }
-    plot_pwm = final_pwm;
-    if (handle->states &
-        (1 << 1)) { // Si el bit de parking esta activo, frenamos
-                    // el motor y no permitimos que se mueva
-      final_pwm = 0;
-    }
-    __HAL_TIM_SET_COMPARE(handle->pwm_tim, handle->pwm_channel, final_pwm);
   }
 }
 
@@ -562,15 +552,21 @@ void SetZeroDegres(MotorHandle_t handle) {
   handle->enc_steering.pulses = 0;
   handle->enc_steering.is_calibrated = 0;
 }
+/* ####################################################*/
 
-void SetMaxDegres(MotorHandle_t handle, uint32_t max_degrees) {
-  if (handle == NULL || max_degrees == 0 || handle->type != MOTOR_TYPE_STEER) {
+/* ####################################################*/
+void SetMaxDegres(
+    MotorHandle_t handle) { // Ya no necesitas pasarle el "180" como parámetro
+  if (handle == NULL || handle->type != MOTOR_TYPE_STEER)
     return;
-  }
-  handle->enc_steering.max_degrees = max_degrees;
+
   handle->enc_steering.max_pulses = handle->enc_steering.pulses;
-  handle->enc_steering.center_pulses = handle->enc_steering.max_pulses / 2;
-  handle->enc_steering.is_calibrated = 1;
+  // Calculamos dónde caen los pulsos del centro basándonos en la
+  // configuración
+  handle->enc_steering.center_pulses =
+      (uint32_t)((handle->steering.center_degrees /
+                  handle->enc_steering.max_degrees) *
+                 handle->enc_steering.max_pulses);
 }
 
 /* ####################################################*/
@@ -596,6 +592,9 @@ float Motor_GetCurrentPosition(MotorHandle_t handle) {
   return handle->steering.current_position_deg;
 }
 
+/* ####################################################*/
+
+/* ####################################################*/
 void Motor_SetDriveDirection(MotorHandle_t handle, bool is_forward) {
   // Solo permitimos cambiar la dirección manualmente al motor de tracción
   if (handle != NULL && handle->type == MOTOR_TYPE_DRIVE) {
@@ -607,16 +606,19 @@ void Motor_SetDriveDirection(MotorHandle_t handle, bool is_forward) {
   }
 }
 
+/* ####################################################*/
+
+/* ####################################################*/
 void Motor_SetParking(MotorHandle_t handle, bool park_state) {
-  if (handle != NULL && handle->type == MOTOR_TYPE_DRIVE) {
+  if (handle != NULL) {
     handle->states = (handle->states & ~(1 << 1)) | (park_state << 1);
   }
 }
 
 void Motor_Break(MotorHandle_t handle) {
   if (handle != NULL) {
-    HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(handle->dir_portA, handle->dirPin_A, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(handle->dir_portB, handle->dirPin_B, GPIO_PIN_SET);
     __HAL_TIM_SET_COMPARE(handle->pwm_tim, handle->pwm_channel, 0);
     handle->states |=
         (1 << 1); // Establecer el bit de parking para activar el freno
@@ -636,68 +638,115 @@ uint16_t Get_LS_DER(MotorHandle_t handle) {
 
   return handle->steering.derPin_limit;
 }
-uint8_t Motor_SteerHomingTask(MotorHandle_t handle) {
-  if (handle == NULL || handle->type != MOTOR_TYPE_STEER)
-    return HOMING_DONE;
-  if (handle->enc_steering.is_calibrated == 1)
-    return HOMING_DONE;
-
-  bool hit_left =
-      (HAL_GPIO_ReadPin(handle->steering.izq_limit_port,
-                        handle->steering.izqPin_limit) == GPIO_PIN_RESET);
-  bool hit_right =
-      (HAL_GPIO_ReadPin(handle->steering.der_limit_port,
-                        handle->steering.derPin_limit) == GPIO_PIN_RESET);
-
-  switch (handle->steering.homing_state) {
-  case HOMING_IDLE:
-    handle->integral_error = 0.0f; // Limpiar memoria del PID
-    handle->steering.homing_state = HOMING_SEEK_LEFT;
-    handle->states &= ~(1 << 0); // Establecer Dirección Izquierda (Bit 0 en 0)
-    handle->states &= ~(1 << 1); // Liberar freno
-    break;
-
-  case HOMING_SEEK_LEFT:
-    if (hit_right) {
-      Motor_Break(handle);
-      SetZeroDegres(handle);
-      handle->enc_steering.pulses = 0; // Este es nuestro Cero Absoluto
-      handle->integral_error = 0.0f;
-      handle->steering.homing_state = HOMING_SEEK_RIGHT;
-      handle->states |= (1 << 0);  // Establecer Dirección Derecha (Bit 0 en 1)
-      handle->states &= ~(1 << 1); // Liberar freno para que arranque de nuevo
-    }
-    break;
-
-  case HOMING_SEEK_RIGHT:
-    if (hit_left) {
-      Motor_Break(handle);
-      SetMaxDegres(handle, 180); // Registra el total de pulsos
-      handle->integral_error = 0.0f;
-      Motor_SetTargetPosition(
-          handle,
-          180.0f); // Mover a centro para evitar estar justo en el límite
-      handle->steering.homing_state = HOMING_CENTERING;
-      handle->states &= ~(1 << 1); // Liberar freno
-    }
-    break;
-
-  case HOMING_CENTERING:
-    // Cuando el PID normal lo haya llevado cerca de los 90°
-    if (fabsf(handle->steering.current_position_deg - 90.0f) < 2.0f) {
-      handle->steering.homing_state = HOMING_DONE;
-    }
-    break;
-
-  case HOMING_DONE:
-    return HOMING_DONE;
-  }
-  return handle->steering.homing_state;
-}
 
 uint8_t Motor_GetType(MotorHandle_t handle) {
   if (handle == NULL) {
     return 0xFF; // Valor inválido para indicar error
   }
   return (uint8_t)handle->type;
+}
+
+uint8_t seteo(MotorHandle_t motor_ptr) {
+  uint8_t done = 0;
+  uint32_t target_pulse = 0;
+  static uint32_t pwm = 6999;
+
+  // Reiniciamos la máquina de estados cada vez que inicializamos un motor
+  // nuevo
+  estado_de_maquina = BUSCAR;
+
+  while (!done) {
+
+    bool zerodegre =
+        (HAL_GPIO_ReadPin(motor_ptr->steering.izq_limit_port,
+                          motor_ptr->steering.izqPin_limit)) == GPIO_PIN_RESET;
+    bool degrees180 =
+        (HAL_GPIO_ReadPin(motor_ptr->steering.der_limit_port,
+                          motor_ptr->steering.derPin_limit)) == GPIO_PIN_RESET;
+
+    switch (estado_de_maquina) {
+    case BUSCAR: {
+      HAL_GPIO_WritePin(motor_ptr->dir_portA, motor_ptr->dirPin_A,
+                        GPIO_PIN_SET);
+      HAL_GPIO_WritePin(motor_ptr->dir_portB, motor_ptr->dirPin_B,
+                        GPIO_PIN_RESET);
+      __HAL_TIM_SET_COMPARE(motor_ptr->pwm_tim, motor_ptr->pwm_channel, pwm);
+
+      estado_de_maquina = BUSCAR_ZERO;
+      break;
+    }
+    case BUSCAR_ZERO: {
+      if (zerodegre) {
+        HAL_GPIO_WritePin(motor_ptr->dir_portA, motor_ptr->dirPin_A,
+                          GPIO_PIN_SET);
+        HAL_GPIO_WritePin(motor_ptr->dir_portB, motor_ptr->dirPin_B,
+                          GPIO_PIN_SET);
+        __HAL_TIM_SET_COMPARE(motor_ptr->pwm_tim, motor_ptr->pwm_channel,
+                              0); // <-- CORREGIDO: 0 en lugar de -1
+        motor_ptr->enc_steering.pulses = 0;
+        HAL_Delay(200);
+
+        motor_ptr->states |= (1 << 0);
+        HAL_GPIO_WritePin(motor_ptr->dir_portA, motor_ptr->dirPin_A,
+                          GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(motor_ptr->dir_portB, motor_ptr->dirPin_B,
+                          GPIO_PIN_SET);
+        __HAL_TIM_SET_COMPARE(motor_ptr->pwm_tim, motor_ptr->pwm_channel, pwm);
+        estado_de_maquina = BUSCAR_FINAL;
+      }
+      break;
+    }
+    case BUSCAR_FINAL: {
+      if (degrees180) {
+        HAL_GPIO_WritePin(motor_ptr->dir_portA, motor_ptr->dirPin_A,
+                          GPIO_PIN_SET);
+        HAL_GPIO_WritePin(motor_ptr->dir_portB, motor_ptr->dirPin_B,
+                          GPIO_PIN_SET);
+        __HAL_TIM_SET_COMPARE(motor_ptr->pwm_tim, motor_ptr->pwm_channel,
+                              0); // <-- CORREGIDO: 0 en lugar de -1
+
+        motor_ptr->enc_steering.max_pulses = motor_ptr->enc_steering.pulses;
+        HAL_Delay(200);
+        estado_de_maquina = CENTRAR;
+      }
+      break;
+    }
+    case CENTRAR: {
+      // Usamos tu mapeo inverso: pulsos = (grados * max_pulses) / max_grados
+      target_pulse = (uint32_t)((motor_ptr->steering.center_degrees *
+                                 motor_ptr->enc_steering.max_pulses) /
+                                motor_ptr->enc_steering.max_degrees);
+
+      if (target_pulse == motor_ptr->enc_steering.pulses) {
+        HAL_GPIO_WritePin(motor_ptr->dir_portA, motor_ptr->dirPin_A,
+                          GPIO_PIN_SET);
+        HAL_GPIO_WritePin(motor_ptr->dir_portB, motor_ptr->dirPin_B,
+                          GPIO_PIN_SET);
+        __HAL_TIM_SET_COMPARE(motor_ptr->pwm_tim, motor_ptr->pwm_channel,
+                              0); // <-- CORREGIDO: 0 en lugar de -1
+
+        estado_de_maquina = BUSCAR;
+        done = 1;
+      }
+      if (target_pulse < motor_ptr->enc_steering.pulses) {
+        motor_ptr->states &= ~(1 << 0);
+        HAL_GPIO_WritePin(motor_ptr->dir_portA, motor_ptr->dirPin_A,
+                          GPIO_PIN_SET);
+        HAL_GPIO_WritePin(motor_ptr->dir_portB, motor_ptr->dirPin_B,
+                          GPIO_PIN_RESET);
+        __HAL_TIM_SET_COMPARE(motor_ptr->pwm_tim, motor_ptr->pwm_channel, 7999);
+      }
+      if (target_pulse > motor_ptr->enc_steering.pulses) {
+        motor_ptr->states |= (1 << 0);
+        HAL_GPIO_WritePin(motor_ptr->dir_portA, motor_ptr->dirPin_A,
+                          GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(motor_ptr->dir_portB, motor_ptr->dirPin_B,
+                          GPIO_PIN_SET);
+        __HAL_TIM_SET_COMPARE(motor_ptr->pwm_tim, motor_ptr->pwm_channel, 7999);
+      }
+      break;
+    }
+    }
+  }
+return 1;
 }

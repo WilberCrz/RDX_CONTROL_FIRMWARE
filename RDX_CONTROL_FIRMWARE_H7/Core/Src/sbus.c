@@ -18,7 +18,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-int32_t map(int32_t x, int32_t in_min, int32_t in_max, int32_t out_min, int32_t out_max);
+int32_t map(int32_t x, int32_t in_min, int32_t in_max, int32_t out_min,
+            int32_t out_max);
 struct sbus_t {
 
   UART_HandleTypeDef *uartHandle;
@@ -51,6 +52,7 @@ sbus_Handle init_sbus(UART_HandleTypeDef *UART_Handle) {
     sbus->off = 0;
     sbus->last_packet_tick = 0;
     sbus->rx_buffer = 0;
+    sbus->states=0;
 
     memset(sbus->process_buffer, 0, sizeof(sbus->process_buffer));
     memset(sbus->canales, 0, sizeof(sbus->canales));
@@ -96,16 +98,19 @@ uint32_t getAcc(sbus_Handle Handle) {
 };
 
 // Función clásica para escalar valores
-int32_t map(int32_t x, int32_t in_min, int32_t in_max, int32_t out_min, int32_t out_max) {
-  
-  // 1. Prevenir divisiones por cero si los mínimos y máximos son iguales por error
+int32_t map(int32_t x, int32_t in_min, int32_t in_max, int32_t out_min,
+            int32_t out_max) {
+
+  // 1. Prevenir divisiones por cero si los mínimos y máximos son iguales por
+  // error
   if (in_max == in_min) {
-      return out_min;
+    return out_min;
   }
 
   // 2. Cálculo con paréntesis correctos (+ out_min va por FUERA de la división)
-  int32_t mapped_value = ((x - in_min) * (out_max - out_min) / (in_max - in_min)) + out_min;
-  
+  int32_t mapped_value =
+      ((x - in_min) * (out_max - out_min) / (in_max - in_min)) + out_min;
+
   return mapped_value;
 }
 uint8_t getDir(sbus_Handle Handle) {
@@ -122,9 +127,9 @@ uint32_t getGiro(sbus_Handle Handle) {
     return 0;
 
   static uint32_t last_pos = 0;
-  uint32_t giro = map(Handle->Giro, 200, 1800, 0, 270);
+  uint32_t giro = map(Handle->Giro, 200, 1800, 140, 0);
 
-  if ((giro - last_pos) > 3) {
+  if (abs((int32_t)giro - (int32_t)last_pos) > 3) {
     last_pos = giro;
   } else {
     giro = last_pos;
@@ -133,9 +138,14 @@ uint32_t getGiro(sbus_Handle Handle) {
   if (giro < 0) {
     giro = 0;
   }
-  if (giro > 180) {
-    giro = 180;
+  if (giro > 270) {
+    giro = 270;
   }
+
+  if (60 < giro && giro < 80) {
+    giro = 70;
+  }
+
   return giro;
 }
 
@@ -156,7 +166,9 @@ uint16_t getChannel(sbus_Handle Handle, uint8_t num_Channel) {
   return 0;
 };
 
-void sbusParse(sbus_Handle Handle) {
+void sbusParse(
+    sbus_Handle
+        Handle) { // ch1=left-right,ch2=not_to_use,ch3=accel,ch4=not_to_use,ch5=F,ch6=not_to_use,ch7=H,ch8=C,ch9=B,ch10=A,
 
   if (Handle == NULL)
     return;
@@ -203,6 +215,12 @@ void sbusParse(sbus_Handle Handle) {
     Handle->last_packet_tick =
         HAL_GetTick(); // Actualizar el tick del último paquete válido
 
+    if (Handle->canales[6] < 1000)// Establecer bit 3 para boost.
+      Handle->states |= (1 << 3);
+    } else {
+      Handle->states &= ~(1 << 3); // Limpiar bit 3 para desactivar boost.
+    }
+
     if (Handle->canales[9] < 1000) {
       Handle->states |= (1 << 0); // Establecer bit 0 para dirección adelante
     } else {
@@ -213,30 +231,47 @@ void sbusParse(sbus_Handle Handle) {
       Handle->states |= (1 << 1); // establecer bit 1 para freno de mano
     } else {
       Handle->states &=
-          ~(1 << 1); // establecer bit 0 para liberar freno de mano
+          ~(1 << 1); // Limpiar bit 1 para liberar freno de mano
     }
   }
-}
 
 USART_TypeDef *sbusGetUartHandle(sbus_Handle Handle) {
   return Handle->uartHandle->Instance;
 }
 
 void sbus_commit_data(sbus_Handle Handle) {
+  if (Handle == NULL)
+    return;
+
   static uint8_t currentbytepos = 0;
 
-  if (currentbytepos < 25) {
-
+  // RUTINA DE SINCRONIZACIÓN
+  if (currentbytepos == 0) {
+    // Si estamos esperando el primer byte, DEBE ser estrictamente 0x0F
+    if (Handle->rx_buffer == 0x0F) {
+      Handle->process_buffer[currentbytepos] = Handle->rx_buffer;
+      currentbytepos++;
+    }
+    // Si no es 0x0F, es basura. Lo ignoramos y currentbytepos sigue siendo 0.
+  } else {
+    // Ya estamos sincronizados, guardamos el byte donde toca
     Handle->process_buffer[currentbytepos] = Handle->rx_buffer;
     currentbytepos++;
   }
 
+  // Cuando tenemos el paquete completo (25 bytes)
   if (currentbytepos >= 25) {
+    // Doble verificación: El último byte debe ser el cierre de SBUS
+    if (Handle->process_buffer[24] == 0x00 ||
+        Handle->process_buffer[24] == 0x04 ||
+        Handle->process_buffer[24] == 0x14 ||
+        Handle->process_buffer[24] == 0x24) {
 
-    sbusParse(Handle);
+      sbusParse(Handle); // Procesamos los canales
+    }
+
+    // Pase lo que pase (haya sido un paquete válido o corrupto),
+    // reiniciamos el contador para buscar el próximo 0x0F
     currentbytepos = 0;
   }
-
-  if (Handle == NULL)
-    return;
 }

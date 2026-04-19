@@ -10,7 +10,7 @@
  */
 #ifndef MOTOR_H
 #define MOTOR_H
-#define DELTA_TIME_SEC 0.005f
+#define MAX_ROVER_RPM  290.0f
 
 #define MOTOR_DIR_TIM_PWM htim1
 #define MOTOR1_TIM_PWM htim2
@@ -58,26 +58,24 @@
 /*########################################*/
 /*ENCODERS */
 /*########################################*/
-#define A_MOTOR1_IZQ TIM_CHANNEL_1
-#define A_MOTOR3_IZQ TIM_CHANNEL_2
-#define A_MOTOR1_DER TIM_CHANNEL_3
-#define A_MOTOR3_DER TIM_CHANNEL_4
+#define A_MOTOR1_IZQ HAL_TIM_ACTIVE_CHANNEL_1
+#define A_MOTOR3_IZQ HAL_TIM_ACTIVE_CHANNEL_2
+#define A_MOTOR1_DER HAL_TIM_ACTIVE_CHANNEL_3
+#define A_MOTOR3_DER HAL_TIM_ACTIVE_CHANNEL_4
 
-#define A_MOTOR2_IZQ TIM_CHANNEL_1
-#define A_MOTOR2_DER TIM_CHANNEL_2
+#define A_MOTOR2_IZQ HAL_TIM_ACTIVE_CHANNEL_1
+#define A_MOTOR2_DER HAL_TIM_ACTIVE_CHANNEL_2
 
-#define ENC_A_TRASERO_IZQ TIM_CHANNEL_1
-#define ENC_A_TRASERO_DER TIM_CHANNEL_2
-#define ENC_A_DELANTERO_IZQ TIM_CHANNEL_3
-#define ENC_A_DELANTERO_DER TIM_CHANNEL_4
+#define ENC_A_TRASERO_IZQ HAL_TIM_ACTIVE_CHANNEL_1
+#define ENC_A_TRASERO_DER HAL_TIM_ACTIVE_CHANNEL_2
+#define ENC_A_DELANTERO_IZQ HAL_TIM_ACTIVE_CHANNEL_3
+#define ENC_A_DELANTERO_DER HAL_TIM_ACTIVE_CHANNEL_4
 
-#define HOMING_IDLE 0
-#define HOMING_SEEK_LEFT 1
-#define HOMING_SEEK_RIGHT 2
-#define HOMING_CENTERING 3
-#define HOMING_DONE 4
+#define BUSCAR 0
+#define BUSCAR_ZERO 1
+#define BUSCAR_FINAL 2
+#define CENTRAR 3
 #define HOMING_RPM_SPEED 100.0f
-
 
 #include "stm32h7xx.h"
 #include <math.h>
@@ -192,7 +190,7 @@ void SetZeroDegres(MotorHandle_t handle);
  * @param handle
  * @param max_degrees
  */
-void SetMaxDegres(MotorHandle_t handle, uint32_t max_degrees);
+void SetMaxDegres(MotorHandle_t handle);
 
 /**
  * @brief Calcula el pid y modifica la direccion y pwm. Exelente para llamar
@@ -219,11 +217,12 @@ void Motor_SetDriveDirection(MotorHandle_t handle, bool is_forward);
 
 void Motor_SetParking(MotorHandle_t handle, bool park_state);
 
- 
 uint8_t Motor_SteerHomingTask(MotorHandle_t handle);
 
 void Motor_Break(MotorHandle_t handle);
 
 uint16_t Get_LS_IZQ(MotorHandle_t handle);
 uint16_t Get_LS_DER(MotorHandle_t handle);
+
+uint8_t seteo(MotorHandle_t motor_ptr);
 #endif

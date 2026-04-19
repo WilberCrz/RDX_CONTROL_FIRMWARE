@@ -62,7 +62,7 @@ void uart_init(uart_handle_t *handle, UART_HandleTypeDef *huart);
  * @param data 
  * @param length 
  */
-void uart_send(uart_handle_t *handle, uint8_t *data, uint8_t length);
+void uart_send(uart_handle_t *handle, char *data, uint16_t length);
 
 /**
  * @brief 

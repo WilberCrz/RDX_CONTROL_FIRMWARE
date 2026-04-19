@@ -64,10 +64,10 @@ void MX_GPIO_Init(void)
 
   /*Configure GPIO pins : LS_TRASERO_IX_0G_Pin LS_TRASERO_IX_180G_Pin LS_TRASERO_DX_0G_Pin LS_TRASERO_DX_180G_Pin
                            PI0 PI1 PI2 PI3
-                           LS_DELANTERO_IX_0G_Pin LS_DELANTERO_DX_0G_Pin LS_DELANTERO_DX_180G_Pin */
+                           LS_DELANTERO_IX_0G_Pin LS_DELANTERO_IX_180G_Pin LS_DELANTERO_DX_0G_Pin LS_DELANTERO_DX_180G_Pin */
   GPIO_InitStruct.Pin = LS_TRASERO_IX_0G_Pin|LS_TRASERO_IX_180G_Pin|LS_TRASERO_DX_0G_Pin|LS_TRASERO_DX_180G_Pin
                           |GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_3
-                          |LS_DELANTERO_IX_0G_Pin|LS_DELANTERO_DX_0G_Pin|LS_DELANTERO_DX_180G_Pin;
+                          |LS_DELANTERO_IX_0G_Pin|LS_DELANTERO_IX_180G_Pin|LS_DELANTERO_DX_0G_Pin|LS_DELANTERO_DX_180G_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOI, &GPIO_InitStruct);
@@ -96,12 +96,6 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOG, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : LS_DELANTERO_IX_180G_Pin */
-  GPIO_InitStruct.Pin = LS_DELANTERO_IX_180G_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(LS_DELANTERO_IX_180G_GPIO_Port, &GPIO_InitStruct);
 
 }
 
