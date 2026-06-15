@@ -1,0 +1,10 @@
+{
+  "source": {
+    "sourceType": "STM32CubeMX"
+  },
+  "board": "NUCLEO-G071RB",
+  "device": "STM32G071RBT6",
+  "core": "Cortex-M0+",
+  "order": 0,
+  "toolchain": "GCC"
+}

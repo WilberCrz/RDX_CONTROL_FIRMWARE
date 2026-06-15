@@ -13,31 +13,8 @@
             "runToEntryPoint": "main",
             "showDevDebugOutput": "none",
             "servertype": "stlink",
-            "stlinkServer":"localhost"
+    
         },
-        {
-            "type": "stlinkgdbtarget",
-            "request": "launch",
-            "name": "STM32Cube: Launch ST-Link GDB Server",
-          "liveWatch": {
-            "enabled": true,
-            "samplesPerSecond": "1",
-            "format": "hexadecimal",
-          },
-          "serverRtos": {
-            "enabled": true,
-            "port": "60000",
-            "driver": "freertos"
-          },
-            "origin": "snippet",
-            "cwd": "${workspaceFolder}",
-            "preBuild": "${command:st-stm32-ide-debug-launch.build}",
-            "runEntry": "main",
-            "imagesAndSymbols": [
-                {
-                    "imageFileName": "${command:st-stm32-ide-debug-launch.get-projects-binary-from-context1}"
-                }
-            ]
-        }
+        
     ]
 }
